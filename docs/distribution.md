@@ -6,7 +6,7 @@ Reusing the official client means copying its verified executable and license in
 
 Fallback downloads first try the unchanged official archive mirrored in Codlet's `node-runtimes` dependency release, then the official Node.js URL. Both sources must match the same archive, executable and license hashes. When changing a Node pin, run the **Publish pinned Node.js runtimes** workflow before publishing installers; it verifies the original archives and never overwrites a same-name asset with different bytes. These dependency archives are kept out of ordinary Codlet release downloads.
 
-The current Windows x64 candidate is [**1.0.0-rc.10**](releases/1.0.0-rc.10/validation.md).
+The current Windows x64 preview is [**1.0.0-rc.19**](releases/1.0.0-rc.19/validation.md).
 The latest macOS Apple Silicon package remains [**1.0.0-rc.7**](releases/1.0.0-rc.7/validation.md).
 The stable updater continues to select published final releases; candidate packages must not replace existing release assets.
 
@@ -109,7 +109,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-WindowsInstall
   -Version 0.2.0
 ```
 
-Prepare `gui-bundle` with `node scripts/package.mjs --output C:\build\gui-bundle` in the GUI source repository. WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The distribution manifest records both source revisions, the GUI version and every payload file's SHA-256. MSI creation rejects a distribution without its GUI package.
+Prepare the matching Core SDK snapshot and `gui-bundle` in the GUI source repository, then run `node scripts/package.mjs --output C:\build\gui-bundle --signing-key ABSOLUTE_PRIVATE_KEY_PATH`; see the [GUI publishing contract](https://github.com/baoabaob/codlet-plugins/blob/main/docs/publishing.md). WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The distribution manifest records both source revisions, the GUI version and every payload file's SHA-256. MSI creation rejects a distribution without its GUI package.
 
 Use `Test-DistributionEncoding.ps1` for Windows PowerShell/encoding checks and `Test-WindowsInstaller.ps1` for controlled process and MSI preflight scenarios. `Test-NativeInstaller.ps1` renders the actual native UI in both languages, validates feature/scope/path commands, and exercises real MSI record progress/cancellation without installing. Fixture builds cannot install. `Test-MsiDistribution.ps1 -StructureOnly` inspects tables, scopes, PATH components and features without changing the user's installation. Never deliver fixture or stale-Core packages used by these tests.
 
@@ -130,7 +130,7 @@ python3 scripts/build-macos-distribution.py \
   --output /absolute/new/output
 ```
 
-The `Build macOS distribution` workflow accepts a full Core commit SHA and an optional `gui_commit` from `codlet-plugins`. With the GUI selected it builds that independent revision and includes a hash-checked bundle; Core-only builds need no plugin checkout. The native ARM64 runner checks Swift, Rust, the current reviewed Native Node, signed update/rollback, mounted DMG initialization and provenance. For local bundled builds pass `--gui-bundle-directory` and `--gui-source-commit`. Pass `--verify-online-plugins` only for additional live GitHub installation acceptance; this requires public API quota and is recorded as `pluginDownloadsVerified`.
+The `Build macOS distribution` workflow accepts a full Core commit SHA and an optional `gui_commit` from `codlet-plugins`. With the GUI selected it builds that independent revision, prepares its Core SDK snapshot, and signs the hash-checked bundle with the retained publisher key in the repository secret `CODLET_PLUGIN_SIGNING_KEY_PEM`. This secret must match the GUI repository's checked-in public key; the workflow keeps it in a runner temporary file only during packaging. Core-only builds need no plugin checkout or publisher key. The native ARM64 runner checks Swift, Rust, the current reviewed Native Node, signed update/rollback, mounted DMG initialization and provenance. For local bundled builds pass `--gui-bundle-directory` and `--gui-source-commit`. Pass `--verify-online-plugins` only for additional live GitHub installation acceptance; this requires public API quota and is recorded as `pluginDownloadsVerified`.
 
 Current Mac signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
 
@@ -144,7 +144,7 @@ Before delivery, verify source revisions, package version, architecture, file ha
 
 `scripts/Publish-Release.ps1` consumes the Windows payload directory, internal MSI with its build receipt and distribution manifest, and the setup EXE with its receipt. A portable ZIP is optional validation input. Combined releases also require the macOS DMG, distribution manifest, and updater ZIP. The script verifies final versions, source revisions, payload hashes, installer receipts, and updater contents, then writes a fresh release directory with assets, checksums, release notes, and `release-plan.json`. Build-time distribution manifests and the setup receipt stay in `.verification` and are checked again when reading the plan. The default `Plan` action creates no remote state. Stable plans and GitHub releases have `prerelease: false`.
 
-The generated `codlet-update-managed.json` uses `schema: 1`, `kind: "codlet-runtime-channel"`, `channel: "stable"`, `version`, and an artifact per selected platform/profile. Each artifact pins its update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. Update ZIPs retain `runtime-update-manifest.json` at their root. A Windows-only release has four public assets: setup EXE, runtime update ZIP for existing portable installations, channel manifest, and `SHA256SUMS.txt`. A combined release adds the Mac DMG and updater ZIP. Only setup EXE is linked as a Windows installation download.
+The generated `codlet-update-managed.json` uses `schema: 1`, `kind: "codlet-runtime-channel"`, the selected `channel`, `version`, and a complete artifact per selected platform/profile. Each artifact pins its update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. `codlet-update-managed-v2.json` retains those complete packages and adds any exact-resident online artifacts. Update ZIPs retain `runtime-update-manifest.json` at their root. A Windows-only release includes the setup EXE, complete runtime update ZIP for existing portable installations, both catalogs, any eligible online ZIPs, and `SHA256SUMS.txt`. A combined release adds the Mac DMG and updater ZIP. Only setup EXE is linked as a Windows installation download.
 
 Old Preview users should upgrade with the new installer when published. New Core promotes only its known built-in Preview channel files to the stable managed channel; it leaves custom channels alone. Historical transition payload support remains in the low-level packaging fixtures but is not the 0.2.0 delivery path.
 

@@ -4,7 +4,7 @@ This is an ordinary Codlet directory package: `codlet.json`, `dist/host.js` and
 optional resources. It needs no renderer entry, official adapter, native binary
 or per-plugin Node installation. Codlet provides the JS process and handles JSONL.
 
-With a Codlet distribution that includes its managed JS runtime:
+Core prepares its verified managed JS runtime on normal launch:
 
 ```powershell
 codlet plugin add .\examples\raw-host --trust --grant host.process --grant cdp.raw
@@ -51,14 +51,15 @@ entry to CommonJS `.js` or `.cjs`. The runtime does not compile TS or load `.nod
 addons. These packaging rules do not provide a sandbox: host JS retains ordinary
 current-user Node filesystem, network and process access.
 
-For source development, build `codlet` then stage its pinned runtime once:
+For source development, build `codlet` after checking development storage:
 
 ```powershell
+node scripts/check-dev-storage.mjs
 cargo build --locked --bin codlet
-.\scripts\Install-JsRuntime.ps1 -Destination .\target\debug
 ```
 
-Use the actual target directory if `CARGO_TARGET_DIR` is set. The staging script
-downloads and verifies the official Node runtime for the distribution; it runs
-no plugin or dependency install scripts and changes no system Node installation.
+Normal launch prepares the runtime automatically. Independent lab/Host fixtures
+can stage it explicitly with `scripts/Install-JsRuntime.ps1 -Destination ACTUAL_TARGET_DIRECTORY`;
+use Cargo's actual target directory if configured elsewhere. This verifies the
+Node archive without plugin/dependency install scripts or a system Node change.
 See [the full JS runtime contract](../../docs/spec/host.md).

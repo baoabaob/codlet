@@ -7,7 +7,7 @@ export async function inspectOwnedViewportAtoms(document) {
   const module=await import(assets[0]),candidates=[];
   for(const value of new Set(Object.values(module)))if(typeof value==='function'&&value.length===1){
     let source;try{source=Function.prototype.toString.call(value);}catch{continue;}
-    if(source.length<1024&&['Array.from(','.keys()', '.startsWith('].every(marker=>source.includes(marker)))candidates.push(value);
+    if(['Array.from(','.keys()', '.startsWith('].every(marker=>source.includes(marker)))candidates.push(value);
   }
   if(candidates.length!==1)throw Error('Native persisted atom namespace listing is unavailable');
   const keys=candidates[0](prefix);

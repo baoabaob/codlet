@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { childAfterParent } from './process-identity.mjs';
+import { fixtureRequestHandler, removeOwnedFixture, writeFixtureReport } from './owned-fixture.mjs';
 const require = createRequire(new URL('../../frontend/package.json', import.meta.url));
 const { WebSocketServer } = require('ws');
 const { probeCodexTraffic } = require('../host/codex-traffic.cjs');
@@ -39,7 +40,7 @@ assert.equal(actualHash, expectedHash, 'backend hash does not match the explicit
 const report = { schema: 1, platform: process.platform, arch: process.arch, backendSha256: actualHash, sandboxMode,
   ...(!probeCodexTraffic({ platform: process.platform, binarySha256: actualHash }).fixtureVerified ? { candidateUnreviewed: true } : {}),
   ...(options['--routing-ws-only'] === 'yes' ? { caseSelector: 'routing-ws-only' } : {}), transport: 'provider-endpoint', proxyConfigured: false, certificateConfigured: false, cases: [] };
-const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codlet-plaintext-'));
+const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'codlet-plaintext-'));
 const originLog = [];
 const sockets = new Set();
 const threadIdsByCase = new WeakMap();
@@ -67,7 +68,8 @@ function responseEvents(text, id) {
   ];
 }
 // Separate local upstream: proves that request edits are actually dispatched.
-const upstream = http.createServer(async (request, response) => {
+const fixtureError = () => { report.fixtureFailure = true; };
+const upstream = http.createServer(fixtureRequestHandler(async (request, response) => {
   let text = ''; for await (const chunk of request) text += chunk;
   const body = JSON.parse(text);
   activeCase.upstreamRequests = (activeCase.upstreamRequests ?? 0) + 1;
@@ -84,7 +86,7 @@ const upstream = http.createServer(async (request, response) => {
   if (!activeCase.sessionRouting && activeCase.completedTurns === 1) { response.writeHead(503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ error: 'synthetic-upstream-error' })); return; }
   response.writeHead(200, { 'content-type': 'application/json' });
   response.end(JSON.stringify(responseEvents(activeCase.sessionRouting ? `upstream-plaintext-${request.url.slice('/provider-'.length)}` : 'upstream-plaintext', `response-${++sequence}`)));
-});
+}, fixtureError));
 await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
 async function dispatch(body, routeTag = null) {
   const suffix = activeCase.sessionRouting ? routeTag : activeCase.completedTurns % 2 ? 'b' : 'a';
@@ -95,7 +97,7 @@ async function dispatch(body, routeTag = null) {
   if (response.status === 503) { activeCase.errorResponseRepaired = true; await response.body.cancel(); return responseEvents('upstream-plaintext', `repaired-${++sequence}`); }
   return response.json();
 }
-const server = http.createServer(async (request, response) => {
+const server = http.createServer(fixtureRequestHandler(async (request, response) => {
   const chunks = []; let size = 0;
   for await (const chunk of request) { chunks.push(chunk); size += chunk.length; if (size > 4 * 1024 * 1024) { request.destroy(); return; } }
   const url = new URL(request.url, 'http://localhost');
@@ -132,7 +134,7 @@ const server = http.createServer(async (request, response) => {
     response.write(frame.slice(cut));
   }
   response.end();
-});
+}, fixtureError));
 server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
 const websocket = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
@@ -152,14 +154,14 @@ server.on('upgrade', (request, socket, head) => {
 });
 websocket.on('connection', (socket, request) => {
   const routeTag = activeCase.sessionRouting ? sessionRoute(request.headers) : null;
-  socket.on('message', async data => {
+  socket.on('message', data => { Promise.resolve().then(async () => {
     const body = JSON.parse(data.toString());
     const current = activeCase;
     current.wsFrames++;
     originLog.push({ protocol: 'websocket', path: new URL(request.url, 'http://localhost').pathname, model: body.model, inputPresent: Array.isArray(body.input), inputItems: body.input?.length, previousResponseIdPresent: typeof body.previous_response_id === 'string', type: body.type, prewarm: body.generate === false, expectedAuthentication: request.headers.authorization === expectedAuthorization, sessionHeaderMatches: sessionHeaderMatches(request.headers), ...(current.sessionRouting ? { routeTag } : {}) });
     if (current.hold) { socket.send(JSON.stringify({ type: 'response.created', response: { id: 'held', status: 'in_progress', output: [] } })); socket.on('close', () => { current.cancelClosed = true; }); return; }
     for (const event of await dispatch(body, routeTag)) socket.send(JSON.stringify(event).replaceAll('upstream-plaintext', 'codlet-response-modified'));
-  });
+  }).catch(() => { fixtureError(); socket.terminate(); }); });
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const endpoint = `http://127.0.0.1:${server.address().port}`;
@@ -236,6 +238,11 @@ async function run(kind, websockets, sessionRouting = false) {
   });
   async function startNative() {
     child = spawn(executable, ['app-server', '--stdio', '-c', `sqlite_home=${JSON.stringify(home)}`], { env, cwd: home, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.on('error', () => {
+      state.failure = 'backend_spawn_failed';
+      for (const call of pending.values()) { clearTimeout(call.timer); call.reject(Error('backend_spawn_failed')); }
+      pending.clear();
+    });
     capture();
     child.stderr.on('data', chunk => { const text = chunk.toString(); for (const tag of ['401 Unauthorized', 'error sending request', 'invalid configuration']) if (text.includes(tag)) (state.errorKinds ??= []).push(tag); });
     lines = createInterface({ input: child.stdout });
@@ -353,25 +360,19 @@ try {
   await closeChild(); websocket.close(); for (const socket of sockets) socket.destroy();
   await new Promise(resolve => server.close(resolve));
   await new Promise(resolve => upstream.close(resolve));
-  try {
-    if (process.platform === 'win32') ps("$p=[IO.Path]::GetFullPath($env:CODLET_FIXTURE_DIRECTORY); if([IO.Path]::GetDirectoryName($p) -ne [IO.Path]::GetTempPath().TrimEnd('\\') -or [IO.Path]::GetFileName($p) -notlike 'codlet-plaintext-*') { throw 'bad_fixture_path' }; $p='\\\\?\\'+$p; $items=@(Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction Stop); if(@($items | Where-Object {($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0}).Count) { throw 'fixture_reparse' }; foreach($item in $items) { $item.Attributes=$item.Attributes -band (-bnot ([IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::Hidden)) }; Remove-Item -LiteralPath $p -Recurse -ErrorAction Stop", { CODLET_FIXTURE_DIRECTORY: directory });
-    else {
-      const resolved = await fs.realpath(directory), temporary = await fs.realpath(os.tmpdir());
-      if (path.dirname(resolved) !== temporary || !path.basename(resolved).startsWith('codlet-plaintext-')) throw Error('bad_fixture_path');
-      await fs.rm(resolved, { recursive: true });
-    }
-    report.cleanup = true;
-  } catch { report.cleanup = false; report.retainedDirectory = directory; }
   const after = snapshot();
   report.originalClientIdentitiesUnchanged = original.filter(value => process.platform === 'win32'
     ? /\\(?:ChatGPT|Codex)\.exe$/iu.test(value.ExecutablePath ?? '')
     : /\/(?:ChatGPT|Codex)$/u.test(value.ExecutablePath ?? '')).every(value => after.some(item => item.ProcessId === value.ProcessId && item.Created === value.Created));
   report.ownedRemaining = [...owned.values()].filter(value => after.some(item => item.ProcessId === value.ProcessId && item.Created === value.Created)).length;
+  try {
+    await removeOwnedFixture(directory, 'codlet-plaintext-', report.ownedRemaining);
+    report.cleanup = true;
+  } catch { report.cleanup = false; report.retainedDirectory = directory; }
   report.observed = originLog;
   report.authenticationPreserved = originLog.every(value => value.expectedAuthentication);
-  await fs.mkdir(new URL('../../.codlet-artifacts/native-tools/request-chain/', import.meta.url), { recursive: true });
   const reportName = `${macCandidate ? 'macos-' : ''}${options['--routing-ws-only'] === 'yes' ? 'backend-plaintext-routing-ws.json' : 'backend-plaintext.json'}`;
-  await fs.writeFile(new URL(`../../.codlet-artifacts/native-tools/request-chain/${reportName}`, import.meta.url), JSON.stringify(report, null, 2) + '\n');
+  await writeFixtureReport(new URL('../../.codlet-artifacts/native-tools/request-chain/', import.meta.url), reportName, report);
   console.log(JSON.stringify(report));
-  if (report.cases.some(value => !value.passed) || !report.cleanup || report.ownedRemaining || !report.originalClientIdentitiesUnchanged || !report.authenticationPreserved) process.exitCode = 1;
+  if (report.fixtureFailure || report.cases.some(value => !value.passed) || !report.cleanup || report.ownedRemaining || !report.originalClientIdentitiesUnchanged || !report.authenticationPreserved) process.exitCode = 1;
 }

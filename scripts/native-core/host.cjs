@@ -60,11 +60,12 @@ async function poll() {
     const file=path.join(__dirname,'command.json');
     if(fs.existsSync(file)) {
       const input=JSON.parse(fs.readFileSync(file,'utf8'));
+      if(!/^[a-z0-9-]{1,80}$/.test(input.id))throw Error('Invalid command ID');
       if(input.id!==lastId){lastId=input.id;let output;
         try{output={id:input.id,ok:true,result:await command(input)};}catch(error){output={id:input.id,ok:false,error:String(error.stack||error)};}
         fs.writeFileSync(path.join(__dirname,'response-'+input.id+'.json'),JSON.stringify(output,null,2)+'\n');
         // Idle samples stop polling entirely; one bounded timer wakes after them.
-        if(output.ok&&input.action==='beginIdle'&&input.options?.idleMs===65000){timer=setTimeout(poll,65000);return;}
+        if(!stopped&&output.ok&&input.action==='beginIdle'&&input.options?.idleMs===65000){timer=setTimeout(poll,65000);return;}
       }
     }
   } catch(error){context.log.error('Core cost lab command failed',String(error));}

@@ -9,14 +9,18 @@ module.exports = {
       const targetId = invocation.caller.targetId;
       let resource = owned.get(targetId);
       if (!resource) {
-        const { sessionId } = await context.cdp.request('Target.attachToTarget', { targetId, flatten: true });
         const marker = `__codletCombinedHost_${context.plugin.generation}`;
-        resource = { sessionId, marker };
+        resource = { sessionId: null, marker, ready: null };
         owned.set(targetId, resource);
-        await context.cdp.request('Runtime.evaluate', {
-          expression: `globalThis[${JSON.stringify(marker)}] = true`, returnByValue: true,
-        }, { sessionId });
+        resource.ready = (async () => {
+          const { sessionId } = await context.cdp.request('Target.attachToTarget', { targetId, flatten: true });
+          resource.sessionId = sessionId;
+          await context.cdp.request('Runtime.evaluate', {
+            expression: `globalThis[${JSON.stringify(marker)}] = true`, returnByValue: true,
+          }, { sessionId });
+        })();
       }
+      await resource.ready;
       return {
         pluginId: context.plugin.id,
         generation: context.plugin.generation,
@@ -30,6 +34,7 @@ module.exports = {
   async deactivate(cleanup) {
     let failure;
     for (const { sessionId, marker } of owned.values()) {
+      if (!sessionId) continue;
       try {
         await cleanup.cdp.request('Runtime.evaluate', {
           expression: `delete globalThis[${JSON.stringify(marker)}]`, returnByValue: true,

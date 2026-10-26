@@ -31,7 +31,7 @@ function editorFor(container,editable){
  if(!editable)return null;const direct=editable.pmViewDesc?.view;if(direct?.state?.doc&&direct.dom===editable)return direct;
  const candidates=[container,...container.querySelectorAll('*')],roots=[];for(const node of candidates){const key=Object.keys(node).find(k=>k.startsWith('__reactContainer$'));if(key){const root=node[key];roots.push(root?.stateNode?.current??root);}}
  if(!roots.length){const key=Object.keys(container).find(k=>k.startsWith('__reactFiber$'));if(key)roots.push(container[key]);}
- const pending=[...roots],seen=new Set();while(pending.length&&seen.size<5000){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);for(const value of Object.values(fiber.memoizedProps??{})){if(!value||typeof value!=='object')continue;try{if(value.view?.dom===editable&&value.view.state?.doc&&typeof value.view.dispatch==='function')return value.view;}catch{}}
+ const pending=[...roots],seen=new Set();while(pending.length){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);for(const value of Object.values(fiber.memoizedProps??{})){if(!value||typeof value!=='object')continue;try{if(value.view?.dom===editable&&value.view.state?.doc&&typeof value.view.dispatch==='function')return value.view;}catch{}}
  if(fiber.sibling)pending.push(fiber.sibling);if(fiber.child)pending.push(fiber.child);}
  return null;
 }

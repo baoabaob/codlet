@@ -1,11 +1,16 @@
-import {readFile,writeFile,mkdir,stat} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,lstat} from 'node:fs/promises';
 import {resolve,dirname,basename} from 'node:path';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {windowsVersion} from './windows-version.mjs';
 const [input,wix,output]=process.argv.slice(2);
 if(!input||!wix||!output)throw Error('Usage: node scripts/build-msi.mjs PORTABLE_DIRECTORY WIX_DIRECTORY OUTPUT.msi');
-const root=resolve(input),out=resolve(output),build=out+'.build';await mkdir(build,{recursive:true});
+const root=resolve(input),out=resolve(output),build=out+'.build';
+for(const file of [out,out+'.json',build]){
+  try{await lstat(file);throw Error('MSI output and build directory must be fresh: '+file);}
+  catch(error){if(error.code!=='ENOENT')throw error;}
+}
+await mkdir(dirname(out),{recursive:true});await mkdir(build);
 const compiler=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',resolve(import.meta.dirname,'Build-WindowsLauncher.ps1'),'-OutputDirectory',build,'-InstallerAssets'],{stdio:'inherit',windowsHide:true});
 if(compiler.error||compiler.status!==0)throw Error('Windows installer helper compilation failed');
 const manifest=JSON.parse(await readFile(resolve(root,'distribution-manifest.json'),'utf8'));

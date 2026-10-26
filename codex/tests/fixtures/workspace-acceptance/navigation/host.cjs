@@ -4,8 +4,17 @@ let pending;
 module.exports={activate(context){pending=setTimeout(async()=>{
   let sessionId;
   try{
-    const {targetInfos}=await context.cdp.request('Target.getTargets'),target=targetInfos.find(target=>target.targetId==='F6A028F01F7CF0D943DB75CF88BA040F');
-    if(!target)throw Error('The reported native target is unavailable');
+    const {targetInfos}=await context.cdp.request('Target.getTargets'),matches=[];
+    for(const candidate of targetInfos.filter(value=>value.type==='page'&&value.url==='app://-/index.html')){
+      let candidateSession;
+      try{
+        ({sessionId:candidateSession}=await context.cdp.request('Target.attachToTarget',{targetId:candidate.targetId,flatten:true}));
+        const value=await context.cdp.request('Runtime.evaluate',{expression:'!!globalThis[Symbol.for("codlet.workspace.navigation.audit")]',returnByValue:true},{sessionId:candidateSession});
+        if(value.result?.value===true)matches.push(candidate);
+      }finally{if(candidateSession)await context.cdp.request('Target.detachFromTarget',{sessionId:candidateSession});}
+    }
+    if(matches.length!==1)throw Error('A unique current navigation fixture Target is required');
+    const target=matches[0];
     ({sessionId}=await context.cdp.request('Target.attachToTarget',{targetId:target.targetId,flatten:true}));
     let result;
     for(let attempt=0;attempt<60&&!context.signal.aborted;attempt++){

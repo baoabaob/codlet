@@ -3,8 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url)), directory = path.resolve(process.argv[2] ?? '');
+execFileSync(process.execPath, [fileURLToPath(new URL('./verify-native-run.mjs', import.meta.url)), directory], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
 const evidence = JSON.parse(fs.readFileSync(path.join(directory, 'owned-runtime-evidence.json'), 'utf8'));
 const state = JSON.parse(fs.readFileSync(path.join(directory, 'profile/logs/manual-client.json'), 'utf8'));
 if (directory !== path.join(repo, '.artifacts/adapter-native', evidence.runId) || evidence.phase !== 'ready' || state.state !== 'ready' ||
@@ -24,12 +26,15 @@ ws.addEventListener('message', event => {
   message.error ? call.reject(Error('Owned fixture metadata request failed: ' + call.method)) : call.resolve(message.result);
 });
 const request = (method, params) => new Promise((resolve, reject) => {
+  const current = JSON.parse(fs.readFileSync(path.join(directory, 'profile/logs/manual-client.json'), 'utf8'));
+  if (current.state !== 'ready' || current.runId !== state.runId || current.endpoint !== state.endpoint || current.backendPid !== state.backendPid || current.backendIdentity.created !== state.backendIdentity.created) throw Error('Owned coordinator changed');
   const ticket = ++id, timer = setTimeout(() => { pending.delete(ticket); reject(Error('Uncertain fixture request: ' + method)); }, 15000);
   pending.set(ticket, { resolve, reject, timer, method }); ws.send(JSON.stringify({ id: ticket, method, params }));
 });
 try {
   await new Promise((resolve, reject) => { ws.addEventListener('open', resolve, { once: true }); ws.addEventListener('error', () => reject(Error('Owned backend unavailable')), { once: true }); });
-  await request('initialize', { clientInfo: { name: 'codlet-adapter-synthetic-author', version: '0.1.0' }, capabilities: { experimentalApi: true } });
+  const initialized = await request('initialize', { clientInfo: { name: 'codlet-adapter-synthetic-author', version: '0.1.0' }, capabilities: { experimentalApi: true } });
+  if (typeof initialized.codexHome !== 'string' || path.toNamespacedPath(path.resolve(initialized.codexHome)).toLowerCase() !== path.toNamespacedPath(path.join(directory, 'profile/codex-home')).toLowerCase()) throw Error('Backend effective home differs');
   ws.send(JSON.stringify({ method: 'initialized', params: {} }));
   for (const archived of [false, true]) {
     const reply = await request('thread/list', { limit: 100, archived, useStateDbOnly: true });

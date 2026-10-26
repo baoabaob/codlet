@@ -21,7 +21,7 @@ The project's current platform scope is based on the official [Windows deploymen
 
 ## Client integration
 
-Reviewed startup mappings live in `compatibility/client-profiles.json`; Core's modular Codex frontend/source mappings live under `codex/compatibility`. Actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Core probes individual interfaces on an unlisted build; a missing or ambiguous contract makes the affected capability unavailable or unknown. The runtime skill discovers the mounted local request client independently. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists. The 1.0.0-rc.1 candidate's local evidence does not rewrite historical acceptance records.
+Core's maintained Native startup and source mappings live in `codex/compatibility/client-profiles.json`. The retired pre-v1 catalog is preserved in [the Core history archive](history/core/client-profiles-before-v1.json). Actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Core probes individual interfaces on an unlisted build; a missing or ambiguous contract makes the affected capability unavailable or unknown. The runtime skill discovers the mounted local request client independently. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists. Local candidate evidence does not rewrite historical acceptance records.
 
 ## Independently published acceptance records
 

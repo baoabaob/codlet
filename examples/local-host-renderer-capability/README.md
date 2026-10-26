@@ -10,7 +10,7 @@ Register and start with the executable from the same portable distribution:
 
 ```powershell
 codlet plugin add .\examples\local-host-renderer-capability --trust --grant host.process --grant cdp.raw
-codlet launch --watch
+codlet launch
 ```
 
 For a package added after launch, use a second terminal with the same executable:
@@ -29,8 +29,11 @@ the isolated result; native cleanup then removes the page marker and detaches it
 session. The actual-JS fixture exercises this same example and checks resource
 ownership through enable, reload, failure restoration and disable.
 
-Both entries have one receipt and generation. Saving either main JS file triggers
-one whole-package watch selection; failed candidates restore both previous source
-snapshots at a fresh generation when current trust permits. The manifest remains
+Both entries have one receipt and generation. Folder import creates an installed
+copy; after editing the source, use `plugin add SOURCE_DIRECTORY --update` with the
+reviewed trust/grants and desired enable preference. Reload and optional watching
+operate on registered built entries, not the separate author project. The direct
+registry fixture also checks whole-package watch replacement and restoration of
+both previous source snapshots when current trust permits. The manifest remains
 schema 1. See [the combined package contract](../../docs/spec/plugin-format.md)
 for declaration ownership, dependent closures, source guards and diagnostics.

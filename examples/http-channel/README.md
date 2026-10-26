@@ -15,7 +15,7 @@ Host 创建带随机私有路径的 loopback 端点，HTTP(S)/SSE 和 WS/WSS 通
 }
 ```
 
-`origin` 必须是自己准备的、提供 Responses HTTP 与 WebSocket API 的服务。`cwd` 必须与准备接入的任务工作目录完全一致。没有设置文件时示例不接入任何任务。macOS 使用自己的绝对路径。配置中不放官方登录凭据；样例不会转发入站 Authorization/Cookie。
+`origin` 必须是自己准备的、提供 Responses HTTP 与 WebSocket API 的服务。`cwd` 必须与准备接入的任务工作目录完全一致。没有设置文件时示例不接入任何任务。macOS 使用自己的绝对路径。配置中不放官方登录凭据；样例不会转发入站 Authorization/Cookie 或 WebSocket 子协议；上游若需要子协议，应在代码中明确选择不含凭据的值。
 
 本例保留直接使用 Node `fs/path` 读取本地配置的写法，因此显式选择 `host.mode:"node"` 与 `host.raw`；这不是标准后台计算或文件服务的必需权限。注册时另授予 `host.network`、`ui.mainWorld`，并用 `--network-origin http://127.0.0.1:8765` 授权同一 origin。`ws://` 使用对应 `http://` origin 授权，`wss://` 对应 `https://`。Core 已内置 Desktop SDK，无需另装 Adapter。通常的注册步骤如下；路径和 origin 换成实际值：
 

@@ -16,7 +16,7 @@ const rawText = item => item.text ?? (Array.isArray(item.content) ? item.content
 export async function probeCanonicalHistory(request, { project, codexHome, protectedIds = [], onCreated = () => {} }) {
   const { thread } = await request('thread/start', { cwd: project, ephemeral: false, approvalPolicy: 'never', sandbox: 'read-only' });
   const validate = value => {
-    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value?.id ?? '') || protectedIds.includes(value.id) ||
+    if (value?.id !== thread.id || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value?.id ?? '') || protectedIds.includes(value.id) ||
         typeof value.cwd !== 'string' || canonical(value.cwd) !== canonical(project) || typeof value.path !== 'string' || !within(value.path, codexHome))
       throw Error('New synthetic thread ownership differs');
   };

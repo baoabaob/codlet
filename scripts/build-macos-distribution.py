@@ -307,8 +307,9 @@ def build(args):
             encoding="utf-8",
         )
         manifest["files"] = [{"path": str(file.relative_to(app)).replace(os.sep, "/"), "bytes": file.stat().st_size, "sha256": digest(file)} for file in sorted(app.rglob("*")) if file.is_file()]
-        output.mkdir()
-        dmg = output / f"Codlet-{version}-macos-arm64.dmg"
+        delivery = temporary / "delivery"
+        delivery.mkdir()
+        dmg = delivery / f"Codlet-{version}-macos-arm64.dmg"
         run("hdiutil", "create", "-volname", "Codlet", "-srcfolder", volume, "-ov", "-format", "UDZO", dmg)
         run("hdiutil", "verify", dmg)
         mounted = temporary / "mounted"
@@ -336,14 +337,15 @@ def build(args):
             if os.path.ismount(mounted):
                 run("hdiutil", "detach", mounted)
         manifest["dmg"] = {"file": dmg.name, "bytes": dmg.stat().st_size, "sha256": digest(dmg)}
-        shutil.copy2(update_zip, output / update_zip.name)
+        shutil.copy2(update_zip, delivery / update_zip.name)
         manifest["updateZip"] = update_asset
-        shutil.copy2(bridge_zip, output / bridge_zip.name)
+        shutil.copy2(bridge_zip, delivery / bridge_zip.name)
         manifest["legacyUpdateZip"] = {**bridge_asset, "files": signed_inventory(bridge_app)}
-        (output / "distribution-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        (output / "SHA256SUMS.txt").write_text(f"{digest(dmg)}  {dmg.name}\n{update_asset['sha256']}  {update_zip.name}\n{bridge_asset['sha256']}  {bridge_zip.name}\n", encoding="utf-8")
-        shutil.copy2(volume / "开始使用.txt", output / "开始使用.txt")
-        print(json.dumps({"dmg": str(dmg), "sha256": digest(dmg), "version": version}))
+        (delivery / "distribution-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (delivery / "SHA256SUMS.txt").write_text(f"{digest(dmg)}  {dmg.name}\n{update_asset['sha256']}  {update_zip.name}\n{bridge_asset['sha256']}  {bridge_zip.name}\n", encoding="utf-8")
+        shutil.copy2(volume / "开始使用.txt", delivery / "开始使用.txt")
+        delivery.rename(output)
+        print(json.dumps({"dmg": str(output / dmg.name), "sha256": manifest['dmg']['sha256'], "version": version}))
 
 
 if __name__ == "__main__":

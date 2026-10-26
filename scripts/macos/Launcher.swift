@@ -137,12 +137,12 @@ final class Launcher: NSObject, NSApplicationDelegate {
                 try? log.close()
                 DispatchQueue.main.async { self?.setupFinished(process.terminationStatus) }
             }
-            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在准备运行环境并安装所选插件，请稍候…"
-            try process.run()
-        } catch { setup = nil; startButton.isEnabled = true; _ = alert("无法初始化 Codlet", error.localizedDescription) }
+            setup = process; startButton.isEnabled = false; gui.isEnabled = false; shortcut.isEnabled = false; setupLabel.stringValue = "正在准备运行环境并安装所选插件，请稍候…"
+            do { try process.run() } catch { try? log.close(); throw error }
+        } catch { setup = nil; startButton.isEnabled = true; gui.isEnabled = true; shortcut.isEnabled = true; _ = alert("无法初始化 Codlet", error.localizedDescription) }
     }
     private func setupFinished(_ result: Int32) {
-        setup = nil; startButton.isEnabled = true
+        setup = nil; startButton.isEnabled = true; gui.isEnabled = true; shortcut.isEnabled = true
         if result != 0 {
             let message = "插件下载或安装未完成，请检查网络或代理后重试。详细原因保存在 macos-setup.log；已有插件、设置和授权保持不变。也可以取消未完成的选项，仅使用 Core。"
             if alert("初始化未完成", message, buttons: ["打开日志", "返回"]) == .alertFirstButtonReturn { openLogs() }
@@ -187,7 +187,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
                     if self.setup == nil { NSApp.terminate(nil) }
                 }
             }
-            core = process; try process.run(); status?.button?.title = "Codlet"
+            core = process
+            do { try process.run() } catch { try? log.close(); throw error }
+            status?.button?.title = "Codlet"
         } catch { core = nil; _ = alert("无法打开 Codlet", error.localizedDescription); NSApp.terminate(nil) }
     }
     @objc private func openLogs() { NSWorkspace.shared.open(home.appendingPathComponent("logs")) }

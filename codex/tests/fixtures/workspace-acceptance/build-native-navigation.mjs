@@ -29,7 +29,7 @@ await fs.copyFile(new URL('./native-owned-probe-host.cjs', import.meta.url), pat
 await fs.writeFile(path.join(output, 'owned-run.json'), JSON.stringify({ runId: evidence.runId, directory,
   coordinatorRunId: evidence.coordinatorRunId, targetId: evidence.targetId, registryScope: evidence.registryScope,
   asyncProbe: true, measureRendererTasks: args.performanceOnly && !args.contractOnly, captureErrors: args.contractOnly, screenshot: args.shellOnly, controlKey,
-  sourceSha256: createHash('sha256').update(bundle.code).digest('hex') }, null, 2) + '\n', { flag: 'wx' });
+  sourceSha256: createHash('sha256').update(bundle.code).digest('hex'), expressionSha256: createHash('sha256').update(expression).digest('hex') }, null, 2) + '\n', { flag: 'wx' });
 await fs.writeFile(path.join(output, 'codlet.json'), JSON.stringify({ schema: 1, id: 'dev.adapter.native-' + label,
   name: 'Owned Native main input navigation', version: '0.0.1', host: { entry: 'host.cjs' },
   permissions: ['host.process', 'cdp.raw'] }, null, 2) + '\n', { flag: 'wx' });

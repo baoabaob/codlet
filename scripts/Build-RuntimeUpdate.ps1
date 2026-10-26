@@ -134,6 +134,7 @@ if ($online) { $manifest.online = [ordered]@{ schema = 1; bridgeProtocol = 1; br
 if ($online -and $online.PSObject.Properties['modules']) {$manifest.online.modules=@($online.modules|ForEach-Object{[ordered]@{id=$_.id;path=$_.path}});$manifest.online.moduleAbi=$online.moduleAbi}
 $temporary = Join-Path $parent ('.codlet-runtime-publish-' + [Guid]::NewGuid().ToString('N'))
 $null = [IO.Directory]::CreateDirectory($temporary)
+try {
 $zipName = 'codlet-' + $Version + '-' + $platform + '-' + $PayloadProfile + $(if ($bridge) { '-legacy-bundled' } else { '' }) + '.zip'
 $zipPath = Join-Path $temporary $zipName
 $manifestBytes = $utf8.GetBytes(($manifest | ConvertTo-Json -Depth 12) + "`n")
@@ -148,7 +149,16 @@ try {
             $target = $entry.Open(); try { $target.Write($bridgePinBytes, 0, $bridgePinBytes.Length) } finally { $target.Dispose() }
         } else {
             $source = [IO.File]::OpenRead((PayloadSource $relative)); $target = $entry.Open()
-            try { $source.CopyTo($target) } finally { $source.Dispose(); $target.Dispose() }
+            $hasher = [Security.Cryptography.SHA256]::Create(); $buffer = New-Object byte[] 1048576; $copied = 0L
+            try {
+                while (($count = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $target.Write($buffer, 0, $count); $null = $hasher.TransformBlock($buffer, 0, $count, $null, 0); $copied += $count
+                }
+                $null = $hasher.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+                $record = @($records | Where-Object { $_.path -ceq $relative })[0]
+                $copiedHash = [BitConverter]::ToString($hasher.Hash).Replace('-', '').ToLowerInvariant()
+                if ($copied -ne $record.bytes -or $copiedHash -cne $record.sha256) { throw "Runtime payload changed while packaging: $relative" }
+            } finally { $hasher.Dispose(); $source.Dispose(); $target.Dispose() }
         }
     }
     $entry = $archive.CreateEntry('runtime-update-manifest.json', [IO.Compression.CompressionLevel]::Optimal)
@@ -176,3 +186,11 @@ $release = [ordered]@{ schema = 1; kind = 'codlet-runtime-channel'; channel = $C
 [IO.File]::WriteAllBytes((Join-Path $temporary 'runtime-update-manifest.json'), $manifestBytes)
 [IO.Directory]::Move($temporary, $outputRoot)
 [pscustomobject]@{ outputDirectory = $outputRoot; archive = (Join-Path $outputRoot $zipName); bytes = $zipBytes; sha256 = $zipHash; channelManifest = (Join-Path $outputRoot ('codlet-update-' + $Channel + '.json')); published = $false }
+} finally {
+    if (Test-Path -LiteralPath $temporary) {
+        if ([IO.Path]::GetDirectoryName($temporary) -cne $parent -or -not [IO.Path]::GetFileName($temporary).StartsWith('.codlet-runtime-publish-', [StringComparison]::Ordinal)) { throw 'Runtime packaging cleanup escaped its temporary directory.' }
+        $null = Plain $temporary $true
+        foreach ($item in Get-ChildItem -LiteralPath $temporary -Recurse -Force) { if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked runtime packaging cleanup target.' } }
+        [IO.Directory]::Delete($temporary, $true)
+    }
+}

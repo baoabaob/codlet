@@ -82,6 +82,9 @@ namespace Codlet.Setup {
         };
         string scope = "user", phase = "setup", logPath;
         bool syncing, closed, gateBusy, cancelPending, conflictingProducts; MsiSession session;
+#if SETUP_FIXTURE
+        Func<Task<List<RunningApplication>>> applicationCheckFixture;
+#endif
         List<RunningApplication> running = new List<RunningApplication>();
         public SetupWindow(bool isPreview, bool english) {
             preview = isPreview; chinese = !english && UsesChinese(CultureInfo.CurrentUICulture);
@@ -107,7 +110,7 @@ namespace Codlet.Setup {
             ReadChoices(); RefreshInstallationPresentation();
             Control<Button>("CloseButton").Click += delegate { CloseOrCancel(); };
             Control<Button>("SecondaryButton").Click += delegate { Secondary(); };
-            Control<Button>("PrimaryButton").Click += async delegate { await Primary(); };
+            Control<Button>("PrimaryButton").Click += async delegate { try { await Primary(); } catch (Exception error) { Notice(error.Message); } };
             Control<RadioButton>("UserScope").Checked += delegate { ChangeScope("user"); };
             Control<RadioButton>("MachineScope").Checked += delegate { ChangeScope("machine"); };
             Control<TextBox>("InstallPath").TextChanged += delegate { if (!syncing) Validate(); };
@@ -225,6 +228,7 @@ namespace Codlet.Setup {
             Control<Button>("PrimaryButton").Visibility = Visibility.Visible; Control<Button>("SecondaryButton").Visibility = Visibility.Visible; Validate();
         }
         async Task Primary() {
+            if (gateBusy) return;
             if (phase == "done") {
                 if (Checked("LaunchChoice") && !preview) {
                     try { StartInstalledClient(); } catch (Exception error) { Control<TextBlock>("StatusText").Text = error.Message; return; }
@@ -240,12 +244,27 @@ namespace Codlet.Setup {
                 return;
             }
             if (phase != "setup" || !Validate()) return;
-            NormalizeDisplayedPath(); folders[scope] = Control<TextBox>("InstallPath").Text;
-            if (!preview && !await CheckApplications()) return;
-            await Install();
+            gateBusy = true; Control<Button>("PrimaryButton").IsEnabled = false; Control<StackPanel>("SetupView").IsEnabled = false;
+            try {
+                NormalizeDisplayedPath(); folders[scope] = Control<TextBox>("InstallPath").Text;
+                bool check = !preview;
+#if SETUP_FIXTURE
+                check = check || applicationCheckFixture != null;
+#endif
+                if (check && !await CheckApplications()) return;
+                await Install();
+            } finally {
+                gateBusy = false; Control<StackPanel>("SetupView").IsEnabled = true;
+                if (!closed) { if (phase == "setup") Validate(); else if (phase == "gate") Control<Button>("PrimaryButton").IsEnabled = true; }
+            }
         }
         async Task<bool> CheckApplications() {
-            running = await Task.Run(() => ProcessGate.Find(folders[scope], true));
+            string directory = folders[scope];
+#if SETUP_FIXTURE
+            running = applicationCheckFixture != null ? await applicationCheckFixture() : await Task.Run(() => ProcessGate.Find(directory, true));
+#else
+            running = await Task.Run(() => ProcessGate.Find(directory, true));
+#endif
             if (closed) return false;
             if (running.Count == 0) return true;
             Status("gate", T("running"), T("save"), T("recheck"));
@@ -349,6 +368,9 @@ namespace Codlet.Setup {
         public void Verify(string output) {
             if (!preview) throw new InvalidOperationException("Verification cannot install software");
             Directory.CreateDirectory(output); MsiSession.CheckProgressContract();
+#if SETUP_FIXTURE
+            VerifyPendingApplicationCheck();
+#endif
             string plan = Properties("machine", Path.Combine(Path.GetTempPath(), "Codlet Fixture"), new[]{"Core", "CliPath", "GUI"});
             if (!plan.Contains("ALLUSERS=2 MSIINSTALLPERUSER=\"\"") || !plan.Contains(" REMOVE=StartMenu,DesktopShortcut")) throw new Exception("Scope/feature selection failed");
             if (!Properties("user", folders["user"], new[]{"Core"}).Contains("MSIINSTALLPERUSER=1")) throw new Exception("Per-user scope failed");
@@ -373,6 +395,37 @@ namespace Codlet.Setup {
             File.WriteAllText(Path.Combine(output, "report.json"), "{\"passed\":true,\"installationPerformed\":false,\"nativeUi\":true,\"payloadHashVerified\":true,\"scopeAndFeatures\":true,\"upgradeMaintenanceDowngrade\":true,\"msiProgressAndCancellation\":true,\"version\":\"" + SetupBuild.Version + "\"}", new UTF8Encoding(false));
             Window.Close();
         }
+#if SETUP_FIXTURE
+        void VerifyPendingApplicationCheck() {
+            var pending = new TaskCompletionSource<List<RunningApplication>>(); int checks = 0;
+            applicationCheckFixture = () => { checks++; return pending.Task; };
+            var previous = System.Threading.SynchronizationContext.Current;
+            System.Threading.SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Window.Dispatcher));
+            try {
+                var first = Primary(); var second = Primary();
+                if (checks != 1 || !gateBusy || Control<StackPanel>("SetupView").IsEnabled) throw new Exception("A pending process check must own one immutable setup selection");
+                pending.SetResult(new List<RunningApplication> { new RunningApplication { Id = 1234, Name = "Codex fixture", Path = "owned fixture" } });
+                PumpFixtureTask(Task.WhenAll(first, second));
+                if (phase != "gate" || gateBusy || !Control<Button>("PrimaryButton").IsEnabled) throw new Exception("A settled process check must return to the existing gate");
+                RestoreSetup(); pending = new TaskCompletionSource<List<RunningApplication>>();
+                var failed = Primary(); pending.SetException(new IOException("Owned process-check fixture failure"));
+                bool rejected = false; try { PumpFixtureTask(failed); } catch (IOException) { rejected = true; }
+                if (!rejected || gateBusy || !Control<StackPanel>("SetupView").IsEnabled || !Control<Button>("PrimaryButton").IsEnabled) throw new Exception("A failed process check must release the setup selection");
+                var departed = new SetupWindow(true, !chinese); var late = new TaskCompletionSource<List<RunningApplication>>();
+                departed.applicationCheckFixture = () => late.Task; var closing = departed.Primary(); departed.Window.Close();
+                late.SetResult(new List<RunningApplication> { new RunningApplication { Id = 1234, Name = "late fixture", Path = "owned fixture" } });
+                PumpFixtureTask(closing);
+                if (!departed.closed || departed.phase != "setup" || departed.gateBusy) throw new Exception("A closed setup must ignore the original process-check result");
+            } finally {
+                applicationCheckFixture = null; System.Threading.SynchronizationContext.SetSynchronizationContext(previous); RestoreSetup();
+            }
+        }
+        void PumpFixtureTask(Task task) {
+            var frame = new DispatcherFrame();
+            task.ContinueWith(completed => Window.Dispatcher.BeginInvoke(new Action(() => frame.Continue = false)));
+            Dispatcher.PushFrame(frame); task.GetAwaiter().GetResult();
+        }
+#endif
         void VerifyUpgradeStates(string output) {
             scope = "user";
             syncing = true; Control<RadioButton>("UserScope").IsChecked = true; syncing = false;

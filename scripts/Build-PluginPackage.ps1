@@ -6,6 +6,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $sourceRoot = (Resolve-Path -LiteralPath $PluginDirectory).ProviderPath.TrimEnd('\', '/')
+function Assert-PlainPath([string] $Path) {
+    for ($current=[IO.Path]::GetFullPath($Path); $current; $current=[IO.Path]::GetDirectoryName($current)) {
+        if ((Test-Path -LiteralPath $current) -and ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Linked package path: $current" }
+    }
+}
+Assert-PlainPath $sourceRoot
 function FileSha256([string] $Path) {
     $algorithm = [Security.Cryptography.SHA256]::Create()
     $stream = [IO.File]::OpenRead($Path)
@@ -14,6 +20,7 @@ function FileSha256([string] $Path) {
 }
 if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) { throw 'PluginDirectory must be a prepared plugin directory.' }
 $destination = [IO.Path]::GetFullPath($OutputPath)
+Assert-PlainPath $destination
 if (-not $destination.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) { throw 'OutputPath must end in .zip.' }
 if ($destination.StartsWith($sourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Place the ZIP outside the plugin directory.' }
 if (Test-Path -LiteralPath $destination) { throw 'OutputPath already exists; choose a new package filename.' }
@@ -48,19 +55,35 @@ $archive = $null
 $complete = $false
 try {
     $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $false)
+    [long] $copiedBytes = 0
+    $buffer = New-Object byte[] 65536
     foreach ($file in ($files | Sort-Object EntryName)) {
+        Assert-PlainPath $file.FullName
         $entry = $archive.CreateEntry($file.EntryName, [IO.Compression.CompressionLevel]::Optimal)
-        $inputStream = [IO.File]::OpenRead($file.FullName)
-        $outputStream = $entry.Open()
-        try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose(); $inputStream.Dispose() }
+        $inputStream = $null
+        $outputStream = $null
+        try {
+            $inputStream = [IO.File]::OpenRead($file.FullName)
+            $outputStream = $entry.Open()
+            while (($count=$inputStream.Read($buffer,0,$buffer.Length)) -gt 0) {
+                $copiedBytes += $count
+                if ($copiedBytes -gt 64MB) { throw 'Prepared package exceeds 64 MiB while reading.' }
+                $outputStream.Write($buffer,0,$count)
+            }
+        } finally {
+            try { if ($null -ne $outputStream) { $outputStream.Dispose() } }
+            finally { if ($null -ne $inputStream) { $inputStream.Dispose() } }
+        }
     }
     $archive.Dispose(); $archive = $null
     $stream.Dispose()
     if ((Get-Item -LiteralPath $destination).Length -gt 32MB) { throw 'Compressed package exceeds 32 MiB.' }
     $complete = $true
 } finally {
-    if ($null -ne $archive) { $archive.Dispose() }
-    $stream.Dispose()
-    if (-not $complete) { Remove-Item -LiteralPath $destination -Force }
+    try { if ($null -ne $archive) { $archive.Dispose() } }
+    finally {
+        try { $stream.Dispose() }
+        finally { if (-not $complete) { Assert-PlainPath $destination; Remove-Item -LiteralPath $destination } }
+    }
 }
-[pscustomobject]@{ Package = $destination; Files = $files.Count; SourceBytes = $totalBytes; Sha256 = (FileSha256 $destination) } | ConvertTo-Json
+[pscustomobject]@{ Package = $destination; Files = $files.Count; SourceBytes = $copiedBytes; Sha256 = (FileSha256 $destination) } | ConvertTo-Json

@@ -36,4 +36,4 @@ GUI tests explicitly snapshot the matching built Core SDK with `scripts/prepare-
 
 Keep the existing plugin IDs and registered installation paths when upgrading consumers so their saved storage identity remains stable. Core preserves old Adapter registrations, grants, preferences and data while preventing duplicate providers. Do not delete those user records to reflect the source-tree cleanup.
 
-The historical import inventory in [codex/PROVENANCE.json](../codex/PROVENANCE.json) records the original code import. The [document archive](history/README.md) records the later documentation moves. Current package identities remain in the [release validation record](releases/1.0.0-rc.1/validation.md); a directory reorganization is not a new Native acceptance run.
+The historical import inventory in [codex/PROVENANCE.json](../codex/PROVENANCE.json) records the original code import. The [document archive](history/README.md) records the later documentation moves. Current package identities remain in the [release validation record](releases/1.0.0-rc.19/validation.md); a directory reorganization is not a new Native acceptance run.

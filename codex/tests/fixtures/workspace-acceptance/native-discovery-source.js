@@ -25,7 +25,7 @@ export async function inspect() {
     const editors = inputs.map(input => {
       const editable = input.querySelector('[contenteditable="true"]');
       let chain;
-      for (let element = editable, depth = 0; element && depth < 16; element = element.parentElement, depth++) {
+      for (let element = editable; element && input.contains(element); element = element.parentElement) {
         chain = currentElementAncestry(element); if (chain) break;
       }
       const implementations = chain?.filter(fiber => ['onDocumentChange', 'onDocumentDispose', 'composerController'].every(marker => componentSource(fiber.type).includes(marker))) ?? [];
@@ -34,13 +34,18 @@ export async function inspect() {
       for (const fiber of chain ?? []) {
         const value = fiber.tag === 10 && fiber.memoizedProps?.value;
         if (value?.view?.dom === editable) controllers.add(value);
-        for (let dep = fiber.dependencies?.firstContext, count = 0; dep && count++ < 128; dep = dep.next)
+        const dependencies = new Set();
+        for (let dep = fiber.dependencies?.firstContext; dep && !dependencies.has(dep); dep = dep.next) {
+          dependencies.add(dep);
           if (dep.memoizedValue?.view?.dom === editable) controllers.add(dep.memoizedValue);
+        }
       }
       const controller = controllers.size === 1 ? [...controllers][0] : null;
       const scopeRefs = implementations.map(fiber => {
         const brands = [];
-        for (let hook = fiber.memoizedState, count = 0; hook && count++ < 128; hook = hook.next) {
+        const hooks = new Set();
+        for (let hook = fiber.memoizedState; hook && !hooks.has(hook); hook = hook.next) {
+          hooks.add(hook);
           const value = hook.memoizedState?.current;
           if (value?.node && value?.scope) brands.push({ brand: value.scope.__scopeBrand ?? null, composerScope: value.scope === parts.composerScope });
         }

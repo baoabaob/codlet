@@ -4,6 +4,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $msi=[IO.Path]::GetFullPath($MsiPath)
 $artifacts=[IO.Path]::GetFullPath($ArtifactsDirectory)
+if(-not $StructureOnly){
+  $computer=Get-CimInstance Win32_ComputerSystem
+  if($computer.Model -cne 'CodletNativeAcceptanceVM'){throw 'Disposable CodletNativeAcceptanceVM required for MSI installation acceptance; use -StructureOnly for read-only checks'}
+}
 if(Test-Path -LiteralPath $artifacts){throw 'Use a new MSI acceptance directory'}
 [IO.Directory]::CreateDirectory($artifacts)|Out-Null
 $install=Join-Path $artifacts 'installed'

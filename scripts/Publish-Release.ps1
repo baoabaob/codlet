@@ -249,7 +249,7 @@ function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version, [
             $previous = [string]$updateRecord.path
             if ($updateRecord.path -ne ('Codlet.app/' + $distributionRecord.path) -or [long]$updateRecord.bytes -ne [long]$distributionRecord.bytes -or
                 $updateRecord.sha256 -ne $distributionRecord.sha256) {
-                Fail 'macOS updater manifest does not exactly match the signed app distribution inventory.'
+                Fail "macOS updater manifest does not exactly match the signed app distribution inventory: $($updateRecord.path), distribution $($distributionRecord.path)."
             }
             if (-not $entries.ContainsKey($updateRecord.path)) { Fail "macOS updater ZIP is missing $($updateRecord.path)." }
             $entry = $entries[$updateRecord.path]
@@ -258,6 +258,14 @@ function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version, [
             $stream = $entry.Open()
             try { if ((Get-StreamSha256 $stream) -ne $updateRecord.sha256) { Fail "macOS updater ZIP hash differs for $($updateRecord.path)." } }
             finally { $stream.Dispose() }
+        }
+        if ($MacManifest.pluginDelivery -eq 'installer-bundle') {
+            if (-not $MacManifest.PSObject.Properties['gui'] -or $MacManifest.gui.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $MacManifest.gui.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { Fail 'Bundled macOS GUI provenance is missing.' }
+            $catalogPath = 'Codlet.app/Contents/Resources/optional-plugins/catalog.json'
+            if (-not $entries.ContainsKey($catalogPath)) { Fail 'Bundled macOS GUI catalog is missing.' }
+            $catalogBytes = Read-ZipEntryBytes $entries[$catalogPath] 1MB
+            $catalog = $script:utf8.GetString($catalogBytes) | ConvertFrom-Json
+            if ($catalog.schema -ne 1 -or $catalog.kind -ne 'codlet-official-plugin-bundle' -or @($catalog.packages).Count -ne 1 -or $catalog.packages[0].id -cne 'codlet-gui' -or $catalog.packages[0].version -cne $MacManifest.gui.version -or $catalog.sourceCommit -cne $MacManifest.gui.sourceCommit) { Fail 'Bundled GUI does not match the macOS distribution.' }
         }
         $pinPath = 'Codlet.app/Contents/Resources/runtime/node-runtime.json'
         if (-not $entries.ContainsKey($pinPath)) { Fail 'macOS updater ZIP has no Node runtime pin.' }
@@ -491,7 +499,7 @@ function New-ReleasePlan {
     if(-not $WindowsOnly){
     $macManifest = Read-JsonFile $macManifestPath
     Assert-DistributionEnvelope $macManifest 'codlet-macos-distribution' 'darwin-arm64' $version
-    if ($macManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only macOS distribution.' }
+    if ($macManifest.pluginDelivery -notin @('github-latest','installer-bundle')) { Fail 'Unsupported macOS plugin delivery.' }
     if ($macManifest.sourceCommit.ToLowerInvariant() -ne $portableManifest.sourceCommit) { Fail 'macOS and Windows builds come from different Core commits.' }
     if ($null -eq $macManifest.dmg -or $macManifest.dmg.file -ne [IO.Path]::GetFileName($dmgPath) -or
         [long]$macManifest.dmg.bytes -ne (Get-Item -LiteralPath $dmgPath).Length -or $macManifest.dmg.sha256 -notmatch '^[0-9a-f]{64}$' -or
@@ -613,7 +621,7 @@ function New-ReleasePlan {
             '## Features',
             '',
             '- A shared Host/renderer plugin lifecycle with explicit permissions, capabilities, cancellation and diagnostics.',
-            '- Optional Desktop/UI adapters and a GUI for plugin discovery, installation, updates and management; CLI and runtime skill work independently.',
+            '- Core-provided Desktop/UI SDK and an optional GUI for plugin discovery, installation, updates and management; CLI and runtime skill work independently.',
             '- Native installation follows system appearance and language, with user or machine scope, shortcuts and optional PATH entries.',
             '- Run the setup EXE to upgrade installed Windows versions, including earlier MSI installations. The installer shows the installed and target versions and keeps the existing folder, scope and options. Compatible online runtime updates can activate without restarting Core; updates that change resident files require the installer for MSI installations.',
             '- Installation and startup ask you to save and quit existing clients yourself, then check again or cancel. They do not send close requests.',
@@ -766,7 +774,7 @@ function Read-ReleasePlan([string]$Path) {
         else {
             $macManifest = Read-JsonFile $macManifestPath
             if ($macManifest.schema -ne 1 -or $macManifest.kind -ne 'codlet-macos-distribution' -or $macManifest.version -ne $plan.version -or
-                $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginDelivery -ne 'github-latest') {
+                $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginDelivery -notin @('github-latest','installer-bundle')) {
                 Fail 'Saved macOS distribution manifest has different release provenance.'
             }
             Assert-MacUpdateZip $zipPath $macManifest ([string]$plan.version) -LegacyBridge:$plan.legacyUpdateBridge

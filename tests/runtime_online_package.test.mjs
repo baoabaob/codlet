@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
@@ -8,8 +8,8 @@ import {createHash} from 'node:crypto';
 import {onlineCoreMetadata} from '../scripts/prepare-online-core.mjs';
 const root=path.resolve(import.meta.dirname,'..');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
-function run(args){return new Promise((resolve,reject)=>{
-  const child=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-File',path.join(root,'scripts/Build-RuntimeUpdate.ps1'),...args],{windowsHide:true});
+function run(args,script='Build-RuntimeUpdate.ps1'){return new Promise((resolve,reject)=>{
+  const child=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-File',path.join(root,'scripts',script),...args],{windowsHide:true});
   let output='';child.stdout.on('data',bytes=>output+=bytes);child.stderr.on('data',bytes=>output+=bytes);child.once('error',reject);child.once('exit',code=>resolve({code,output}));
 });}
 test('online runtime package binds one fixed Core source to exact bootstrap digests and rejects arbitrary JS paths',{skip:process.platform!=='win32'},async t=>{
@@ -43,4 +43,20 @@ test('online runtime package binds one fixed Core source to exact bootstrap dige
   await writeFile(pin,JSON.stringify({...full,modules:[{id:'renderer-ui',path:'runtime/core-modules/renderer-helpers.js'}]}));
   const wrongIdentity=await run(options.map(value=>value===output?path.join(directory,'wrong-identity'):value));
   assert.notEqual(wrongIdentity.code,0);assert.match(wrongIdentity.output,/Unsupported online Core module/);
+  await writeFile(pin,JSON.stringify(metadata));
+  const previous=path.join(directory,'previous-channel.json');await writeFile(previous,JSON.stringify({schema:99}));
+  const failed=await run([...options.map(value=>value===output?path.join(directory,'failed-merge'):value),'-MergeChannelManifest',previous]);
+  assert.notEqual(failed.code,0);assert.match(failed.output,/Merge manifest/);
+  assert.equal((await readdir(directory)).some(name=>name.startsWith('.codlet-runtime-publish-')),false);
+});
+test('a failed Windows distribution build removes only its unpublished staging tree',{skip:process.platform!=='win32'},async t=>{
+  const directory=await mkdtemp(path.join(tmpdir(),'codlet-distribution-failure-'));
+  t.after(async()=>{assert.equal(path.dirname(path.resolve(directory)),path.resolve(tmpdir()));await rm(directory,{recursive:true});});
+  const executable=Buffer.alloc(128);executable.write('MZ');executable.writeUInt32LE(64,60);executable.write('PE\0\0',64,'binary');executable.writeUInt16LE(0x8664,68);
+  const exe=path.join(directory,'codlet.exe'),gui=path.join(directory,'gui'),output=path.join(directory,'output');
+  await writeFile(exe,executable);await mkdir(gui);await writeFile(path.join(gui,'catalog.json'),JSON.stringify({schema:99}));
+  const result=await run(['-CodletExecutable',exe,'-SourceCommit','a'.repeat(40),'-GuiBundleDirectory',gui,'-GuiSourceCommit','b'.repeat(40),'-OutputDirectory',output],'Build-Distribution.ps1');
+  assert.notEqual(result.code,0);assert.match(result.output,/Expected one GUI package/);
+  assert.equal((await readdir(directory)).some(name=>name.startsWith('output.stage-')),false);
+  assert.deepEqual(await readFile(exe),executable);assert.deepEqual(JSON.parse(await readFile(path.join(gui,'catalog.json'),'utf8')),{schema:99});
 });

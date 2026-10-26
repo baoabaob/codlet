@@ -15,6 +15,7 @@ $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $output=[IO.Path]::GetFullPath($OutputDirectory)
 if(Test-Path -LiteralPath $output){throw 'Choose a new output directory'}
+if($Zip -and (Test-Path -LiteralPath ($output+'.zip'))){throw 'ZIP already exists'}
 function Plain([string]$Path){for($current=[IO.Path]::GetFullPath($Path);$current;$current=[IO.Path]::GetDirectoryName($current)){if((Test-Path -LiteralPath $current) -and (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw "Linked distribution path: $current"}}}
 function Hash([string]$Path){$algorithm=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::OpenRead($Path);try{[BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose();$algorithm.Dispose()}}
 $utf8=[Text.UTF8Encoding]::new($false)
@@ -34,6 +35,8 @@ $cargo=[IO.File]::ReadAllText((Join-Path $root 'Cargo.toml'))
 $version=[regex]::Match($cargo,'(?m)^version = "([^"]+)"').Groups[1].Value
 $stage=$output+'.stage-'+[Guid]::NewGuid().ToString('N')
 [IO.Directory]::CreateDirectory($stage)|Out-Null
+$zipTemporary=$null
+try{
 function Copy-Payload([string]$Source,[string]$Relative){
   Plain $Source
   $target=[IO.Path]::GetFullPath((Join-Path $stage $Relative))
@@ -155,5 +158,14 @@ if($guiPackage){$manifest.gui=[ordered]@{version=$guiPackage.version;sourceCommi
 [IO.File]::WriteAllText((Join-Path $stage 'distribution-manifest.json'),($manifest|ConvertTo-Json -Depth 8),$utf8)
 [IO.Directory]::Move($stage,$output)
 $zipPath=$null
-if($Zip){$zipPath=$output+'.zip';if(Test-Path -LiteralPath $zipPath){throw 'ZIP already exists'};Add-Type -AssemblyName System.IO.Compression.FileSystem;[IO.Compression.ZipFile]::CreateFromDirectory($output,$zipPath,[IO.Compression.CompressionLevel]::Optimal,$false)}
+if($Zip){$zipPath=$output+'.zip';$zipTemporary=$zipPath+'.tmp-'+[Guid]::NewGuid().ToString('N');Add-Type -AssemblyName System.IO.Compression.FileSystem;[IO.Compression.ZipFile]::CreateFromDirectory($output,$zipTemporary,[IO.Compression.CompressionLevel]::Optimal,$false);[IO.File]::Move($zipTemporary,$zipPath)}
 [pscustomobject]@{directory=$output;version=$version;zip=$zipPath;zipSha256=$(if($zipPath){Hash $zipPath})}|ConvertTo-Json -Compress
+}finally{
+  if(Test-Path -LiteralPath $stage){
+    if([IO.Path]::GetDirectoryName($stage) -cne [IO.Path]::GetDirectoryName($output) -or -not $stage.StartsWith($output+'.stage-',[StringComparison]::Ordinal)){throw 'Distribution cleanup escaped its staging path'}
+    Plain $stage
+    foreach($item in Get-ChildItem -LiteralPath $stage -Recurse -Force){if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Linked distribution cleanup target'}}
+    [IO.Directory]::Delete($stage,$true)
+  }
+  if($zipTemporary -and (Test-Path -LiteralPath $zipTemporary)){Plain $zipTemporary;Remove-Item -LiteralPath $zipTemporary}
+}

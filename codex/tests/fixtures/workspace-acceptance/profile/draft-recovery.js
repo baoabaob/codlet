@@ -4,11 +4,12 @@ import {providersFor,wrapProviders} from '../../../../frontend/src/adapter/works
 const symbol=Symbol.for('codlet.workspace.draft.recovery'),cap={name:'codex.ui.workspace',api:1,scope:'target'};
 let audit,workspace,base,discovery,native,root,slot;
 export function activate(context){audit={phase:'idle',inspect:()=>({available:true,phase:audit.phase,result:audit.result}),run};globalThis[symbol]=audit;
- async function run(){audit.phase='recovering';const results=[];
+ async function run({threadIds=[]}={}){audit.phase='recovering';const results=[];
   try{const access=await context.rpc.request(cap,'getApi',{});workspace=globalThis[Symbol.for(access.symbol)].connect(context,access.ticket);if(workspace.getSnapshot().auxiliary){audit.result={status:'auxiliary'};return;}
    base=deferredNavigation(context);discovery=createWorkspaceDiscovery(base.native);native=await discovery.composer();const app=discovery.connection().node,threads=app.retainedScopeEntries?.get(native.ThreadScope);
    const source=workspace.getSurface().content.element,providers=providersFor(source);slot=workspace.createSlot('workspace.overlay');
-   for(const id of ['01a11452-8e10-7570-9367-4e92d732bc28','01a11452-7a06-76b3-af6c-062863252133']){
+   if(threadIds.length!==2||threadIds.some(id=>!/^[-\w]{8,256}$/u.test(id))||new Set(threadIds).size!==2)throw Error('Two explicit owned synthetic threadIds required');
+   for(const id of threadIds){
     const node=threads?.get('local:'+id)?.node,routes=node?.retainedScopeEntries?.get(native.RouteScope),entries=[...routes??[]];
     const matching=entries.filter(([,entry])=>!entry.node.value.search);
     const result={threadId:id,threadCache:!!node,routeKeys:entries.map(([key])=>key),matches:matching.length};results.push(result);if(matching.length!==1)continue;
@@ -27,5 +28,5 @@ export function activate(context){audit={phase:'idle',inspect:()=>({available:tr
   }catch(error){audit.result={status:'failed',message:error.message,results};}finally{root&&native.DOM.flushSync(()=>root.unmount());root=null;workspace?.dispose();discovery?.dispose();base?.dispose();audit.phase='done';}
  }
 }
-function editorFor(container,editable){if(!editable)return null;const key=Object.keys(container).find(k=>k.startsWith('__reactContainer$')),attached=container[key],pending=[attached?.stateNode?.current??attached],seen=new Set();while(pending.length&&seen.size<5000){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);for(const value of Object.values(fiber.memoizedProps??{}))if(value&&typeof value==='object')try{if(value.view?.dom===editable&&value.view.state?.doc)return value.view;}catch{}if(fiber.sibling)pending.push(fiber.sibling);if(fiber.child)pending.push(fiber.child);}return null;}
+function editorFor(container,editable){if(!editable)return null;const key=Object.keys(container).find(k=>k.startsWith('__reactContainer$')),attached=container[key],pending=[attached?.stateNode?.current??attached],seen=new Set();while(pending.length){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);for(const value of Object.values(fiber.memoizedProps??{}))if(value&&typeof value==='object')try{if(value.view?.dom===editable&&value.view.state?.doc)return value.view;}catch{}if(fiber.sibling)pending.push(fiber.sibling);if(fiber.child)pending.push(fiber.child);}return null;}
 export function deactivate(){root&&native.DOM.flushSync(()=>root.unmount());workspace?.dispose();discovery?.dispose();base?.dispose();if(globalThis[symbol]===audit)delete globalThis[symbol];}

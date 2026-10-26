@@ -87,7 +87,7 @@ async function fixture(mode) {
             }
             assert.equal(path.dirname(path.resolve(base)), path.resolve(os.tmpdir()));
             assert.ok(path.basename(base).startsWith('codlet-launcher-test-'));
-            await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+            await rm(base, { recursive: true, maxRetries: 10, retryDelay: 100 });
         }
     };
 }

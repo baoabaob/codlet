@@ -4,9 +4,10 @@ let timer;
 module.exports = { activate(context) { timer = setTimeout(async () => {
   let sessionId, tracing = false, subscription, streamReady;
   const report = { warnings: [] }, output = path.join(context.root, 'report.json');
-  const mode = fs.existsSync(path.join(context.root,'mode.json')) ? JSON.parse(fs.readFileSync(path.join(context.root,'mode.json'),'utf8')) : {};
+  let mode;
   const request = (method, params = {}) => context.cdp.request(method, params, { sessionId });
   try {
+    mode = fs.existsSync(path.join(context.root,'mode.json')) ? JSON.parse(fs.readFileSync(path.join(context.root,'mode.json'),'utf8')) : {};
     const { targetInfos } = await context.cdp.request('Target.getTargets');
     for (const candidate of targetInfos.filter(t => t.type === 'page' && t.url === 'app://-/index.html')) {
       ({ sessionId } = await context.cdp.request('Target.attachToTarget', { targetId: candidate.targetId, flatten: true }));
@@ -24,7 +25,7 @@ module.exports = { activate(context) { timer = setTimeout(async () => {
       subscription = await context.cdp.subscribe({ scope: 'session', sessionId, methods: ['Tracing.tracingComplete'] }, event => report.resolveStream(event.params.stream));
       await request('Tracing.start', { transferMode: 'ReturnAsStream', streamFormat: 'json', categories: 'devtools.timeline,blink.user_timing,disabled-by-default-v8.cpu_profiler' }); tracing = true;
     } catch (e) { report.warnings.push(e.message); }
-    const runArgs={limit:mode.limit??2,containBody:mode.containBody??false,transport:mode.transport??'direct'};
+    const runArgs={threadIds:mode.threadIds??[],limit:mode.limit??2,containBody:mode.containBody??false,transport:mode.transport??'direct'};
     const running=request('Runtime.evaluate', { expression: 'globalThis[Symbol.for("codlet.workspace.navigation.profile")].run('+JSON.stringify(runArgs)+')', awaitPromise: true, returnByValue: true });
     if(runArgs.transport==='trusted'){
       let done=false,last;running.then(()=>done=true,()=>done=true);const start=Date.now();report.inputs=[];
@@ -47,7 +48,7 @@ module.exports = { activate(context) { timer = setTimeout(async () => {
   } catch (error) { report.error = error.message; }
   finally {
     if (tracing) try { await request('Tracing.end'); } catch {}
-    await subscription?.unsubscribe(); delete report.resolveStream;
+    try { await subscription?.unsubscribe(); } catch(error) { report.warnings.push(error.message); } delete report.resolveStream;
     if (sessionId) try { await context.cdp.request('Target.detachFromTarget', { sessionId }); } catch {}
     fs.writeFileSync(output, JSON.stringify(report, null, 2));
   }

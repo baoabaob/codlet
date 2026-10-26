@@ -347,6 +347,27 @@ try {
     Assert-True -Condition ($residualReport.result.executionStatus -eq 'evidence_failed') -Message 'a remaining related process must be reported as evidence_failed'
     Assert-True -Condition (($residualReport.result.messages -join "`n") -match 'PID 5300') -Message 'the remaining process failure must identify the residual PID'
 
+    foreach ($sameIdentity in @($true, $false)) {
+        $identityFixture = $schemaFixture | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $existingHost = [pscustomobject][ordered]@{
+            processId = 5400
+            parentProcessId = 5000
+            name = 'codlet.exe'
+            executablePath = $fakeCodletPath
+            startedAtUtc = '2026-08-30T00:00:00.0000000+00:00'
+        }
+        $identityFixture.snapshots.before.processes = @($existingHost)
+        $afterHost = $existingHost | ConvertTo-Json | ConvertFrom-Json
+        if (-not $sameIdentity) { $afterHost.startedAtUtc = '2026-08-30T01:00:00.0000000+00:00' }
+        $identityFixture.snapshots.after.processes = @($afterHost)
+        $identityFixturePath = Join-Path $tempRoot "host-identity-$sameIdentity.json"
+        Write-JsonFile -Path $identityFixturePath -Value $identityFixture
+        $identityArtifacts = Join-Path $tempRoot "host-identity-$sameIdentity"
+        $identityResult = Invoke-TestFixture -CodletExecutable $fakeCodletPath -ArtifactsDirectory $identityArtifacts -FixturePath $identityFixturePath
+        $expectedExit = if ($sameIdentity) { 0 } else { 70 }
+        Assert-True -Condition ($identityResult.exitCode -eq $expectedExit) -Message 'only the exact preexisting Host may be excluded from residual evidence; PID reuse must fail'
+    }
+
     $malformedFixture = $schemaFixture | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     $malformedFixture.snapshots.before.capturedAtUtc = $null
     $malformedFixturePath = Join-Path $tempRoot 'malformed-fixture.json'
@@ -611,11 +632,17 @@ public static class CodletAcceptanceArgumentProbe {
     }
 } finally {
     $resolvedTempRoot = [IO.Path]::GetFullPath($tempRoot)
-    $resolvedSystemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $resolvedSystemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if (-not $resolvedTempRoot.StartsWith($resolvedSystemTemp, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove unexpected test directory: $resolvedTempRoot"
     }
-    Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force
+    $ancestor = $resolvedTempRoot
+    while (-not [string]::IsNullOrEmpty($ancestor)) {
+        if ((Get-Item -LiteralPath $ancestor).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing linked cleanup ancestor: $ancestor" }
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+    if (@(Get-ChildItem -LiteralPath $resolvedTempRoot -Recurse | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -gt 0) { throw 'Refusing linked cleanup entries.' }
+    Remove-Item -LiteralPath $resolvedTempRoot -Recurse
 }
 
 [Console]::Out.WriteLine('M0/M1 acceptance PowerShell tests passed.')

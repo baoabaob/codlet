@@ -4,10 +4,10 @@ This Host-only package uses the public filesystem, network and system brokers.
 It needs no renderer, GUI, official adapter or raw CDP permission. Its source and
 requested permissions can be inspected before registration.
 
-Start the local HTTP fixture in one terminal from a portable distribution:
+Start the local HTTP fixture from the source checkout with a development Node 24:
 
 ```powershell
-.\runtime\node-v24.21.0-win-x64\node.exe .\examples\host-os-broker\serve-fixture.cjs
+node .\examples\host-os-broker\serve-fixture.cjs
 ```
 
 In another terminal, inspect and explicitly grant this example's scopes:

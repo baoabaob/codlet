@@ -13,6 +13,17 @@
     "Raw JSON and moved JavaScript example are byte-preserved.",
     "Current Workspace contract is separately derived and updated in docs/spec/workspace.md."
   ],
+  "laterMaintenance": [
+    {
+      "date": "2026-10-27",
+      "destinationRepository": "core",
+      "destinationPath": "docs/examples/sample-workspace-navigation.mjs",
+      "movedSha256": "b584f3c872ae79e437f0fac5bcafc1505628ffcb31dde2f5cd184ddf8b561667",
+      "maintainedSha256": "b2984458a2cc50ddf110211926d2dcf9335195f478b6f251fb23fd546abab71b",
+      "change": "The maintained public navigation example now disposes its operation in finally when execution or commit fails.",
+      "verification": "tests/example_lifecycle.test.mjs covers navigation failure cleanup. Original move and source hashes below remain unchanged."
+    }
+  ],
   "documents": [
     {
       "sourceRepository": "plugins",

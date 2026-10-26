@@ -6,6 +6,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { finished } from 'node:stream/promises';
 
 const [planPath, labBinary] = process.argv.slice(2);
 if (!planPath || !labBinary) throw Error('Usage: prepare-native-profile.mjs <preflight.json> <reviewed-lab-binary>');
@@ -25,11 +26,19 @@ const errors = fs.createWriteStream(path.join(directory, 'prepare.stderr.log'), 
 const child = spawn(labBinary, ['--experimental-isolated-client', '--root', plan.planned.profileRoot,
   '--expected-package-version', plan.installedPackage.Version, '--app-server-url', 'ws://127.0.0.1:' + port],
   { cwd: directory, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-let buffer = '', prepared, quitSent = false;
+let buffer = '', prepared, quitSent = false, preparationError;
+const fail = error => {
+  preparationError ??= error;
+  child.stdin.destroy();
+  if (child.pid && child.exitCode === null && child.signalCode === null) child.kill();
+};
+child.on('error', fail);
+output.on('error', fail); errors.on('error', fail);
 child.stderr.pipe(errors);
 child.stdout.on('data', data => {
-  output.write(data); buffer += data.toString('utf8'); let split;
-  while ((split = buffer.indexOf('\n')) >= 0) {
+  try {
+   output.write(data); buffer += data.toString('utf8'); let split;
+   while ((split = buffer.indexOf('\n')) >= 0) {
     const line = buffer.slice(0, split); buffer = buffer.slice(split + 1); let row;
     try { row = JSON.parse(line); } catch { continue; }
     if (row.event === 'child_created') throw Error('Preparation unexpectedly launched a client');
@@ -38,11 +47,14 @@ child.stdout.on('data', data => {
       prepared = row.detail;
     }
     if (row.event === 'awaiting_start' && prepared && !quitSent) { quitSent = true; child.stdin.write('quit\n'); }
-  }
+   }
+  } catch (error) { fail(error); }
 });
-child.stdin.on('error', error => { if (!quitSent) throw error; });
-const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
-output.end();
+child.stdin.on('error', error => { if (!quitSent) fail(error); });
+const code = await new Promise(resolve => child.once('close', resolve));
+output.end(); errors.end();
+await Promise.all([finished(output), finished(errors)]);
+if (preparationError) throw preparationError;
 if (code !== 0 || !prepared || !quitSent) throw Error('Preparation did not end normally; inspect owned logs');
 fs.writeFileSync(path.join(directory, 'prepared.json'), JSON.stringify({ schema: 1, runId: plan.runId,
   state: 'prepared_not_started', desktopStarted: false, backendStarted: false, prepared }, null, 2) + '\n', { flag: 'wx' });

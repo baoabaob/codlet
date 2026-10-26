@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { digest } from './lib/native-source-snapshot.mjs';
+import { digest, relativeSourcePath } from './lib/native-source-snapshot.mjs';
 import { parseSourceModel, normalizedSource } from './lib/native-source-index.mjs';
 const require = createRequire(new URL('../frontend/package.json', import.meta.url));
 const { transformSync } = require('esbuild');
@@ -14,10 +14,11 @@ const candidates = role === 'all' ? Object.entries(analysis.roles).flatMap(([nam
 if (!candidates?.length) throw Error('The requested role has no located candidates');
 fs.mkdirSync(output, { recursive: true });
 const entries = candidates.map((candidate, index) => {
-  const source = fs.readFileSync(path.join(analysis.snapshot, 'sources', candidate.file), 'utf8');
+  const source = fs.readFileSync(path.join(analysis.snapshot, 'sources', relativeSourcePath(candidate.file)), 'utf8');
   if (digest(source) !== candidate.sha256) throw Error('Source identity differs from the analysis');
   const text = source.slice(candidate.start.offset, candidate.end.offset);
-  const name = `${candidate.role ? candidate.role + '-' : ''}${index}-${candidate.local.replace(/[^\w-]/g, '_')}.js`;
+  const safeName = value => String(value).replace(/[^\w-]/g, '_');
+  const name = `${candidate.role ? safeName(candidate.role) + '-' : ''}${index}-${safeName(candidate.local)}.js`;
   fs.writeFileSync(path.join(output, name), transformSync(`(${text})`, { loader: 'js', minify: false, treeShaking: false }).code, { flag: 'wx' });
   const dependencies = [...new Set(candidate.dependencies.map(value => value.name))];
   const prefix = dependencies.length ? `var ${dependencies.join(',')};\n` : '';

@@ -8,9 +8,9 @@
     "zh": { "name": "隐藏额度提示", "description": "隐藏 Codex 中额度已用尽的提示卡片。" },
     "en": { "name": "Usage Banner Hider", "description": "Hide the exhausted usage banner in Codex." }
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "renderer": { "entry": "renderer.js", "world": "isolated" },
-  "permissions": ["ui.dom"],
+  "permissions": ["ui.dom", "ui.nativeDom"],
   "provides": [],
   "requires": []
 }

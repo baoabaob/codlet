@@ -4,6 +4,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { sameCreation } from '../../../scripts/process-identity.mjs';
+import { writeFixtureReport } from '../../../scripts/owned-fixture.mjs';
 
 const directory = path.resolve(process.argv[2] ?? ''), plan = JSON.parse(fs.readFileSync(path.join(directory, 'preflight.json'), 'utf8'));
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -26,8 +28,8 @@ if (pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw Error('Missi
 const ps = source => JSON.parse(execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', source], { encoding: 'utf8', windowsHide: true }).trim());
 const facts = ps(`@(${pids.join(',')}) | ForEach-Object { $adapterProcess=Get-Process -Id $_ -ErrorAction Stop; [pscustomobject]@{pid=$adapterProcess.Id;created=$adapterProcess.StartTime.ToUniversalTime().ToString('o');filetime=$adapterProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString();image=$adapterProcess.Path} } | ConvertTo-Json -Compress`);
 const byPid = new Map(facts.map(fact => [fact.pid, fact]));
-if (Date.parse(byPid.get(state.managerPid).created) !== Date.parse(state.managerCreated) || byPid.get(state.desktopPid).filetime !== state.desktopCreated ||
-    Date.parse(byPid.get(state.backendPid).created) !== Date.parse(state.backendIdentity.created)) throw Error('Process creation mismatch');
+if (!sameCreation(byPid.get(state.managerPid).created, state.managerCreated) || byPid.get(state.desktopPid).filetime !== state.desktopCreated ||
+    !sameCreation(byPid.get(state.backendPid).created, state.backendIdentity.created)) throw Error('Process creation mismatch');
 if (path.resolve(byPid.get(state.hostPid).image).toLowerCase() !== path.join(directory, 'client/codlet-lab.exe').toLowerCase() ||
     path.resolve(byPid.get(state.backendPid).image).toLowerCase() !== path.resolve(config.officialCli).toLowerCase() ||
     path.resolve(byPid.get(state.desktopPid).image).toLowerCase() !== path.join(path.dirname(path.dirname(config.officialCli)), 'ChatGPT.exe').toLowerCase()) throw Error('Owned executable mismatch');
@@ -62,7 +64,8 @@ try {
     ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
     ws.addEventListener('error', () => { clearTimeout(timer); reject(Error('Backend connection failed')); }, { once: true });
   });
-  await request('initialize', { clientInfo: { name: 'codlet-adapter-owned-data-check', version: '0.1.0' }, capabilities: { experimentalApi: true } });
+  const initialized = await request('initialize', { clientInfo: { name: 'codlet-adapter-owned-data-check', version: '0.1.0' }, capabilities: { experimentalApi: true } });
+  if (typeof initialized.codexHome !== 'string' || !samePath(initialized.codexHome, path.join(root, 'codex-home'))) throw Error('Backend effective home differs');
   ws.send(JSON.stringify({ method: 'initialized', params: {} }));
   const account = await request('account/read', { refreshToken: false });
   const { config: effective } = await request('config/read', { cwd: path.join(root, 'project'), includeLayers: false });
@@ -94,7 +97,7 @@ try {
     processes: facts, targetId, targetEvidence: 'Owned pipe renderer snapshot', startup: startup.detail.evidence,
     originalProcessesUnchangedAtStartup: state.originalProcessesUnchanged, authenticated: account.account != null,
     sandboxReady: sandbox.status === 'ready', activeThreads, archivedThreads, syntheticThreadsVerified: synthetic?.threads.length ?? 0, labBinarySha256: labHash, performanceMeasured: false };
-  fs.writeFileSync(path.join(directory, 'owned-runtime-evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
+  await writeFixtureReport(directory, 'owned-runtime-evidence.json', evidence);
   process.stdout.write(JSON.stringify({ runId: plan.runId, phase: evidence.phase, authenticated: evidence.authenticated, sandboxReady: evidence.sandboxReady,
     activeThreads, archivedThreads, syntheticThreadsVerified: evidence.syntheticThreadsVerified, performanceMeasured: false }) + '\n');
 } finally { for (const call of pending.values()) clearTimeout(call.timer); ws.close(); }

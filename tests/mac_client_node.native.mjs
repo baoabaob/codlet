@@ -10,6 +10,7 @@ const core = path.resolve(process.argv[2] ?? '');
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Apple Silicon runner required');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codlet-reviewed-cua-node-'));
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(NODE_|OPENSSL_|DYLD_|ELECTRON_RUN_AS_NODE$)/iu.test(key)));
+let launch, launchClosed;
 try {
   const probe = path.join(temporary, 'host-modules.cjs');
   fs.writeFileSync(probe, `
@@ -56,10 +57,11 @@ try {
   const snapshot = path.join(temporary, 'desktop-snapshot.cjs');
   fs.copyFileSync(entry, snapshot);
   const bootstrap = path.join(core, 'runtime/client-launch.cjs');
-  const launch = spawn(process.execPath, [
+  launch = spawn(process.execPath, [
     '--no-addons', '--no-experimental-strip-types', '--no-global-search-paths',
     '--no-experimental-require-module', bootstrap, entry, snapshot,
   ], { cwd: temporary, env: clean, stdio: ['pipe', 'pipe', 'pipe'] });
+  launchClosed = new Promise(resolve => { launch.once('close', resolve); launch.once('error', resolve); });
   const reply = await new Promise((resolve, reject) => {
     let stdout = '', stderr = '';
     const timer = setTimeout(() => { launch.kill('SIGTERM'); reject(new Error('Client source timed out: ' + stderr)); }, 5000);
@@ -78,6 +80,13 @@ try {
   assert.ok(reply.result.code.length > 0);
   console.log('Reviewed Mac CUA Node modules and Core clientSource ABI passed.');
 } finally {
+  if (launch?.pid && launch.exitCode === null && launch.signalCode === null) {
+    launch.kill('SIGTERM');
+    let timer;
+    await Promise.race([launchClosed, new Promise(resolve => { timer = setTimeout(() => { launch.kill('SIGKILL'); resolve(); }, 2000); })]);
+    clearTimeout(timer);
+    await launchClosed;
+  }
   assert.equal(path.dirname(path.resolve(temporary)), path.resolve(os.tmpdir()));
   fs.rmSync(temporary, { recursive: true });
 }

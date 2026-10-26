@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGETS = ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "aarch64-apple-darwin")
+TARGETS = ("x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "aarch64-apple-darwin")
 NOTICE_NAME = re.compile(r"^(?:licen[cs]e|copying|notice|copyright)(?:[._-]|$)", re.I)
 SUPPLEMENTAL = {
     ("asn1-rs-impl", "0.2.0"): {

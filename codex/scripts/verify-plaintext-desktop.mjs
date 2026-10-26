@@ -6,6 +6,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { childAfterParent } from './process-identity.mjs';
+import { fixtureRequestHandler, removeOwnedFixture, writeFixtureReport } from './owned-fixture.mjs';
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, i, all) => i % 2 ? pairs : [...pairs, [value, all[i + 1]]], []));
 if (process.platform === 'win32' && process.env.CODLET_TEST_DISPOSABLE_WINDOWS_HOST !== '1') throw Error('Native Windows desktop acceptance requires a disposable VM/host and CODLET_TEST_DISPOSABLE_WINDOWS_HOST=1.');
 if (process.platform !== 'win32' || options['--run-owned'] !== 'yes' || ![options['--executable'], options['--backend']].every(value => path.isAbsolute(value ?? ''))) throw Error('explicit_windows_owned_paths_required');
@@ -15,7 +16,7 @@ const powershell = path.join(process.env.SYSTEMROOT, 'System32/WindowsPowerShell
 const ps = (script, env = {}) => execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, encoding: 'utf8', timeout: 10000, env: { ...process.env, ...env } }).trim();
 const snapshot = () => JSON.parse(ps("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,@{n='Created';e={$_.CreationDate.ToUniversalTime().ToString('o')}} | ConvertTo-Json -Compress"));
 const before = snapshot(), owned = new Map();
-const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codlet-main-plaintext-'));
+const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'codlet-main-plaintext-'));
 const reportPath = path.join(directory, 'result.json');
 const report = { schema: 1, kind: 'official-desktop-plaintext', fixture: { desktop: 0, model: 0, wsAttempt: 0 }, proxyConfigured: false, certificateConfigured: false };
 let child, socket, server, startupTail = '';
@@ -29,7 +30,7 @@ function capture() {
 }
 const connections = new Set();
 try {
-  server = http.createServer(async (request, response) => {
+  server = http.createServer(fixtureRequestHandler(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
     if (request.url.startsWith('/desktop/')) {
       report.fixture.desktop++; report.fixture.desktopRequestModified = Buffer.concat(chunks).toString() === 'desktop-modified';
@@ -50,7 +51,7 @@ try {
       response.end(); return;
     }
     response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(request.url.includes('/models') ? { models: [], data: [] } : {}));
-  });
+  }, () => { report.fixtureFailure = true; }));
   server.on('connection', value => { connections.add(value); value.on('close', () => connections.delete(value)); });
   server.on('upgrade', (request, value) => { report.fixture.wsAttempt++; value.end('HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -97,10 +98,9 @@ finally {
   report.originalClientIdentitiesUnchanged = before.filter(value => /\\(?:ChatGPT|Codex)\.exe$/iu.test(value.ExecutablePath ?? '')).every(value => after.some(item => item.ProcessId === value.ProcessId && item.Created === value.Created));
   report.ownedRemaining = [...owned.values()].filter(value => after.some(item => item.ProcessId === value.ProcessId && item.Created === value.Created)).length;
   if (report.ownedRemaining === 0) try {
-    ps("$p=[IO.Path]::GetFullPath($env:CODLET_FIXTURE_DIRECTORY); if([IO.Path]::GetDirectoryName($p) -ne [IO.Path]::GetTempPath().TrimEnd('\\') -or [IO.Path]::GetFileName($p) -notlike 'codlet-main-plaintext-*') { throw 'bad_fixture_path' }; $p='\\\\?\\'+$p; $items=@(Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction Stop); if(@($items | Where-Object {($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0}).Count) { throw 'fixture_reparse' }; foreach($item in $items) { $item.Attributes=$item.Attributes -band (-bnot ([IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::Hidden)) }; Remove-Item -LiteralPath $p -Recurse -ErrorAction Stop", { CODLET_FIXTURE_DIRECTORY: directory }); report.cleanup = true;
+    await removeOwnedFixture(directory, 'codlet-main-plaintext-', report.ownedRemaining); report.cleanup = true;
   } catch { report.cleanup = false; report.retainedDirectory = directory; }
-  await fs.mkdir(new URL('../../.codlet-artifacts/native-tools/request-chain/', import.meta.url), { recursive: true });
-  await fs.writeFile(new URL('../../.codlet-artifacts/native-tools/request-chain/desktop-plaintext.json', import.meta.url), JSON.stringify(report, null, 2) + '\n');
+  await writeFixtureReport(new URL('../../.codlet-artifacts/native-tools/request-chain/', import.meta.url), 'desktop-plaintext.json', report);
   console.log(JSON.stringify(report));
-  if (report.failure || report.acceptance?.failure || !report.acceptance?.desktopRoundTrip || !report.acceptance?.progressRoundTrip || !report.fixture.desktopRequestModified || !report.acceptance?.modelResponseModified || report.acceptance?.modelTurnStatus !== 'completed' || !report.cleanup || report.ownedRemaining || !report.originalClientIdentitiesUnchanged) process.exitCode = 1;
+  if (report.failure || report.fixtureFailure || report.acceptance?.failure || !report.acceptance?.desktopRoundTrip || !report.acceptance?.progressRoundTrip || !report.fixture.desktopRequestModified || !report.acceptance?.modelResponseModified || report.acceptance?.modelTurnStatus !== 'completed' || !report.cleanup || report.ownedRemaining || !report.originalClientIdentitiesUnchanged) process.exitCode = 1;
 }

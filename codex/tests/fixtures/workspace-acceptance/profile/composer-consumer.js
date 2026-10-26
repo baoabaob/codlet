@@ -9,13 +9,13 @@ let audit, workspace, discovery, base, slot, native;
 const roots = new Set();
 const pendingViews=new Set();
 export function activate(context) {
-  audit = { phase: 'connecting', inspect: () => ({ available: !!workspace && !workspace.getSnapshot().auxiliary, phase: audit.phase,result:audit.result }),run:async()=>audit.result=await run() };
+  audit = { phase: 'connecting', inspect: () => ({ available: !!workspace && !workspace.getSnapshot().auxiliary, phase: audit.phase,result:audit.result }),run:async args=>audit.result=await run(args) };
   globalThis[symbol] = audit;
   context.rpc.request(capability, 'getApi', {}).then(access => {
     workspace = globalThis[Symbol.for(access.symbol)].connect(context, access.ticket);
     audit.phase = 'idle';
   }, error => { audit.phase = 'failed'; audit.error = error.message; });
-  async function run() {
+  async function run({ threadIds = [] } = {}) {
     audit.phase = 'preparing';
     const original = workspace.getSnapshot().threadId,originalInput=workspace.getSurface().composer?.element,originalEditable=workspace.getSurface().composer?.element.querySelector('[contenteditable="true"]'), samples = [], switches = [];
     try {
@@ -30,7 +30,8 @@ export function activate(context) {
       const Frame = uniqueExport(module, value => ['hideThreadContent', 'canInteract', 'shouldResume', 'threadAccess', 'hostMcpApps'].every(marker => componentSource(value).includes(marker)), 'independent native composer frame');
       const ThreadScope=uniqueExport(native.shared,value=>value?.__scopeBrand==='ThreadScope','thread scope'),RouteScope=uniqueExport(native.shared,value=>value?.__scopeBrand==='RouteScope','route scope');
       const routeDescription=uniqueExport(native.shared,value=>typeof value==='function'&&value.length===1&&['pathname','routeTemplate','local-thread','client-local-thread','routeKind','/extension/panel/new','new URLSearchParams'].every(marker=>componentSource(value).includes(marker)),'route description');
-      const ids = ['01a11452-8e10-7570-9367-4e92d732bc28', '01a11452-7a06-76b3-af6c-062863252133',original].filter(id => native.manager.getConversation(id)?.resumeState === 'resumed');
+      if (threadIds.length !== 2 || threadIds.some(id => !/^[-\w]{8,256}$/u.test(id)) || new Set([...threadIds, original]).size !== 3) throw Error('Two explicit owned synthetic tasks distinct from the current task are required');
+      const ids = [...threadIds,original].filter(id => native.manager.getConversation(id)?.resumeState === 'resumed');
       if (ids.length !== 3) throw Error('Three resumed local conversations are required');
       const surface = findWorkspaceSurface(document), providers = providersFor(surface.content);
       slot = workspace.createSlot('workspace.overlay');

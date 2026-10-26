@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$TestLegacyBridge)
+param([switch]$TestLegacyBridge,[switch]$TestBundledMacGui)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -280,7 +280,18 @@ try {
         @{ source = $codlet; relative = 'Contents/Resources/codlet'; mode = 493 },
         @{ source = $macPinPath; relative = 'Contents/Resources/runtime/node-runtime.json'; mode = 420 }
     )
-    $slimMacRecords = @($fileSpecs | ForEach-Object { File-Record $_.source $_.relative $_.mode })
+    if ($TestBundledMacGui) {
+        foreach ($relative in @('optional-plugins/catalog.json','optional-plugins/packages/codlet-gui/codlet.json','optional-plugins/packages/codlet-gui/renderer.js')) {
+            $destination=Join-Path $app ('Contents/Resources/'+$relative)
+            [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))|Out-Null
+            [IO.File]::Copy((Join-Path $portable $relative),$destination,$false)
+            $fileSpecs+=@{source=$destination;relative=('Contents/Resources/'+$relative);mode=420}
+        }
+    }
+    $slimPaths=[Collections.Generic.List[string]]::new()
+    foreach($spec in $fileSpecs){$slimPaths.Add($spec.relative)}
+    $slimPaths.Sort([StringComparer]::Ordinal)
+    $slimMacRecords=@(foreach($relative in $slimPaths){$spec=@($fileSpecs|Where-Object{$_.relative -ceq $relative})[0];File-Record $spec.source $spec.relative $spec.mode})
     if ($TestLegacyBridge) {
         $legacyPin = ($macPin | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
         $legacyPin.PSObject.Properties.Remove('mode')
@@ -334,6 +345,7 @@ try {
         dmg = [ordered]@{ file = $dmgName; bytes = [long](Get-Item -LiteralPath $dmgPath).Length; sha256 = Hash-File $dmgPath }
         updateZip = [ordered]@{ file = $updateZipName; bytes = [long](Get-Item -LiteralPath $updateZipPath).Length; sha256 = Hash-File $updateZipPath }
     }
+    if ($TestBundledMacGui) { $macManifest.pluginDelivery='installer-bundle';$macManifest.gui=@{version=$version;sourceCommit=$pluginCommit} }
     if ($TestLegacyBridge) {
         $macManifest.legacyUpdateZip = $macManifest.updateZip
         $macManifest.legacyUpdateZip.files = @($macRecords.ToArray())
@@ -341,6 +353,11 @@ try {
     }
     $macManifestPath = Join-Path $mac 'distribution-manifest.json'
     Write-Json $macManifestPath $macManifest
+    if ($TestBundledMacGui) {
+        $wrong=($macManifest|ConvertTo-Json -Depth 20|ConvertFrom-Json);$wrong.gui.sourceCommit='c'*40
+        $rejected=$false;try{Assert-MacUpdateZip $updateZipPath $wrong $version -LegacyBridge:$TestLegacyBridge}catch{if($_.Exception.Message -match 'Bundled GUI does not match'){$rejected=$true}else{throw}}
+        if(-not $rejected){throw 'macOS GUI source mismatch was not rejected'}
+    }
 
     $arguments = @(
         '-Action', 'Plan', '-Repository', 'baoabaob/codlet', '-Channel', $fixtureChannel,
@@ -474,7 +491,8 @@ try {
     finally { $ErrorActionPreference = $priorErrorAction }
     if ($tamperExitCode -eq 0) { throw 'Publisher accepted a changed same-version local asset.' }
     if (-not $TestLegacyBridge) {
-        $bridgeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -TestLegacyBridge
+        $bridgeArguments=@('-TestLegacyBridge');if($TestBundledMacGui){$bridgeArguments+='-TestBundledMacGui'}
+        $bridgeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath @bridgeArguments
         if ($LASTEXITCODE -ne 0 -or -not (($bridgeOutput -join "`n" | ConvertFrom-Json).passed)) { throw 'Legacy bridge publication fixture failed.' }
     }
     [pscustomobject]@{
@@ -493,6 +511,7 @@ try {
             'distribution manifests and the native setup receipt remain local verification inputs',
             'changed local-only verification manifest is refused',
             'changed same-version local asset is refused'
+            $(if($TestBundledMacGui){'bundled macOS GUI is accepted with exact catalog provenance; changed GUI source commit is rejected'})
         )
         externalWrites = $false
     } | ConvertTo-Json -Depth 8

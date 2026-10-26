@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createPrivateKey,generateKeyPairSync} from 'node:crypto';
-import {mkdtemp,mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm,realpath,link,symlink,unlink,readdir} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
 import {resolve,relative,isAbsolute,basename} from 'node:path';
 import {inflateRawSync} from 'node:zlib';
@@ -99,4 +101,24 @@ test('Node-generated signatures match the shared Rust verification fixture',asyn
   const fixture = JSON.parse(await readFile(new URL('./fixtures/plugin-update-manifest.json',import.meta.url),'utf8'));
   validateUpdateManifest(fixture,repository);
   assert.deepEqual(fixture,createUpdateManifest([entry('community.notes','1.2.0')],repository));
+});
+test('channel merge replaces only its output and rejects hard-link or directory aliases of versioned inputs',async()=>{
+  const temporary=await realpath(tmpdir()),root=await mkdtemp(resolve(temporary,'codlet-channel-merge-'));
+  let junction;
+  try{
+    const source=resolve(root,'release');await mkdir(source);
+    const previous=resolve(source,'previous.json'),incoming=resolve(source,'incoming.json'),output=resolve(root,'channel.json');
+    const before=JSON.stringify(createUpdateManifest([entry('community.notes','1.0.0')],repository))+'\n';
+    await writeFile(previous,before);await writeFile(incoming,JSON.stringify(createUpdateManifest([entry('community.notes','1.1.0')],repository))+'\n');
+    const script=fileURLToPath(new URL('../scripts/plugin-release.mjs',import.meta.url));
+    const merge=destination=>execFileSync(process.execPath,[script,'merge','--incoming',incoming,'--previous',previous,'--repository',repository,'--output',destination],{encoding:'utf8',stdio:'pipe',windowsHide:true});
+    await link(previous,output);assert.throws(()=>merge(output),/ordinary unlinked|versioned input/);assert.equal(await readFile(previous,'utf8'),before);await unlink(output);
+    junction=resolve(root,'alias');await symlink(source,junction,process.platform==='win32'?'junction':'dir');
+    assert.throws(()=>merge(resolve(junction,'previous.json')),/versioned input/);assert.equal(await readFile(previous,'utf8'),before);
+    merge(output);merge(output);assert.equal(JSON.parse(await readFile(output,'utf8')).plugins[0].payload.version,'1.1.0');assert.equal(await readFile(previous,'utf8'),before);
+    assert.equal((await readdir(root)).some(name=>name.endsWith('.tmp')),false);
+  }finally{
+    if(junction)await unlink(junction);
+    const part=relative(temporary,root);assert.ok(part&&!isAbsolute(part)&&!part.startsWith('..')&&!part.includes('/')&&!part.includes('\\'));await rm(root,{recursive:true});
+  }
 });

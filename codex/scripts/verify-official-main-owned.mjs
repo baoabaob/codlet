@@ -10,6 +10,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { childAfterParent } from './process-identity.mjs';
+import { removeOwnedFixture, writeFixtureReport } from './owned-fixture.mjs';
 
 const require = createRequire(new URL('../../frontend/package.json', import.meta.url));
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -386,7 +387,7 @@ async function main() {
     ];
     const { WebSocketServer } = require('ws');
     originalProcesses = snapshot();
-    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codlet-official-main-'));
+    directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'codlet-official-main-'));
     lifetime = new AbortController();
     receiptPath = path.join(directory, 'receipt.json');
     fixtureGo = path.join(directory, 'attached.go');
@@ -727,11 +728,7 @@ async function main() {
       report.ownedRemaining = [...owned.values()].filter(value => after.some(item => item.ProcessId === value.ProcessId && item.Created === value.Created)).length;
       if (directory && report.ownedRemaining === 0) {
         try {
-          if (macRunner) {
-            const resolved = await fs.realpath(directory), temporary = await fs.realpath(os.tmpdir());
-            if (path.dirname(resolved) !== temporary || !path.basename(resolved).startsWith('codlet-official-main-')) throw failure('bad_fixture_path');
-            await fs.rm(resolved, { recursive: true });
-          } else powershellCall("$p=[IO.Path]::GetFullPath($env:CODLET_FIXTURE_DIRECTORY); $parent=[IO.Path]::GetDirectoryName($p).TrimEnd('\\'); $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\\'); if(-not [string]::Equals($parent,$temp,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($p) -notlike 'codlet-official-main-*') { throw 'bad_fixture_path' }; $long='\\\\?\\'+$p; $items=@(Get-Item -LiteralPath $long -Force -ErrorAction Stop)+@(Get-ChildItem -LiteralPath $long -Recurse -Force -ErrorAction Stop); if(@($items | Where-Object {($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0}).Count) { throw 'fixture_reparse' }; foreach($item in $items) { $item.Attributes=$item.Attributes -band (-bnot ([IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::Hidden)) }; $removed=$false; for($attempt=0;$attempt -lt 40;$attempt++) { try { Remove-Item -LiteralPath $long -Recurse -ErrorAction Stop; $removed=$true; break } catch { if($attempt -eq 39) { throw }; Start-Sleep -Milliseconds 100 } }; if(-not $removed -and (Test-Path -LiteralPath $long)) { throw 'fixture_cleanup_failed' }", { CODLET_FIXTURE_DIRECTORY: directory });
+          await removeOwnedFixture(directory, 'codlet-official-main-', report.ownedRemaining);
           report.cleanup = true;
         } catch { report.cleanup = false; report.retainedDirectory = true; }
       } else if (directory) { report.cleanup = false; report.retainedDirectory = true; }
@@ -771,8 +768,7 @@ async function main() {
       && report.fixture.unauthorizedForwardAttempts === 0 && report.fixture.fakeAuthorizationSeen && acceptedTransport
       && report.cleanup && report.ownedRemaining === 0 && report.originalClientIdentitiesUnchanged;
     try {
-      await fs.mkdir(artifactDirectory, { recursive: true });
-      await fs.writeFile(artifactPath, JSON.stringify(report, null, 2) + '\n');
+      await writeFixtureReport(artifactDirectory, artifactName, report);
     } catch { report.artifactWriteFailed = true; report.accepted = false; }
     process.stdout.write(JSON.stringify(report) + '\n');
     if (!report.accepted) process.exitCode = 1;

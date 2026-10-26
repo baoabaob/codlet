@@ -5,7 +5,7 @@ const capability = { name: 'workspace.shadow.audit', api: 1, scope: 'target' }, 
 let audit, workspace, base, discovery;
 export function activate(context) {
   audit = { phase: 'idle', inspect: () => ({ available: true, phase: audit.phase, result: audit.result }), run }; globalThis[symbol] = audit;
-  async function run() {
+  async function run({ threadIds = [] } = {}) {
     audit.phase = 'connecting'; const samples = [], phases = [];
     try {
       const access = await context.rpc.request(capability, 'getApi', {}); workspace = globalThis[Symbol.for(access.symbol)].connect(context, access.ticket);
@@ -13,7 +13,8 @@ export function activate(context) {
       base=deferredNavigation(context);discovery=createWorkspaceDiscovery(base.native);const native=await discovery.transcript();
       const slot = workspace.createSlot('workspace.overlay'), holder = document.createElement('div');
       holder.style.cssText = 'position:fixed;left:-17000px;top:0;width:600px;height:800px;display:flex;flex-direction:column;'; slot.container.append(holder);
-      const ids = ['01a11452-8e10-7570-9367-4e92d732bc28', '01a11452-7a06-76b3-af6c-062863252133'];
+      if (threadIds.length !== 2 || threadIds.some(id => !/^[-\w]{8,256}$/u.test(id)) || new Set(threadIds).size !== 2) throw Error('Two explicit owned synthetic threadIds required');
+      const ids = threadIds;
       for (const id of ids) {
         audit.phase = 'mounting'; const box = document.createElement('div'); box.style.cssText = 'width:600px;height:400px;min-height:400px;'; holder.append(box);
         const start = performance.now(), handle = workspace.mountTranscript(box, { threadId: id, readOnly: false, onState: state => phases.push({ id, phase: state.phase, diagnostic: state.diagnostic }) }); await handle.ready;

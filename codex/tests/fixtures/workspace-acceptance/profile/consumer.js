@@ -14,11 +14,12 @@ export function activate(context) {
     return navigation.ready;
   }).then(() => { audit.phase = 'idle'; }, error => { audit.phase = 'failed'; audit.error = error.message; });
 
-  async function run({ limit = 2, containBody = false, transport = 'direct' } = {}) {
+  async function run({ threadIds = [], limit = 2, containBody = false, transport = 'direct' } = {}) {
     if (audit.phase !== 'idle') throw Error('Probe is not idle');
     audit.phase = 'running';
     const original = workspace.getSnapshot().threadId;
-    const known = ['01a11452-8e10-7570-9367-4e92d732bc28', '01a11452-7a06-76b3-af6c-062863252133', '01a11452-7ee9-7b00-ad30-7fa7ec94ddc5', '01a0dd6b-1b1f-7563-b2d2-af42d7f7a919', '01a1116c-6826-7d73-924d-3df1c2bfc4af'];
+    if (!threadIds.length || threadIds.some(id => !/^[-\w]{8,256}$/u.test(id)) || new Set(threadIds).size !== threadIds.length) throw Error('Explicit owned synthetic threadIds required');
+    const known = threadIds;
     const connection=localConnection(),manager=connection.manager,host=locateHost();
     const ids = known.filter(id => id !== original && manager.getConversation(id)).slice(0, limit);
     const samples = [], longTasks = [], requests=[],methodCounts={};

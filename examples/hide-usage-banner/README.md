@@ -1,9 +1,9 @@
 # Hide usage banner
 
-隐藏截图中的 “You’re out of Codex and Work usage” 提示卡片。插件只需要 `ui.dom`，没有 Host 入口或官方 adapter 依赖，可在 Codlet 管理面板单独启停。
+隐藏 “You’re out of Codex and Work usage” 提示卡片。插件声明 `ui.dom` 和直接 Native DOM 访问 `ui.nativeDom`，没有 Host 入口或单独 Adapter 依赖，可在 Codlet 管理面板单独启停。
 
 ```powershell
-codlet plugin add .\examples\hide-usage-banner --trust --grant ui.dom
+codlet plugin add .\examples\hide-usage-banner --trust --grant ui.dom --grant ui.nativeDom
 codlet plugin enable dev.local.hide-usage-banner
 ```
 

@@ -99,7 +99,16 @@ const cli=path.join(backendDirectory,'codex.exe');
 for(const executable of backendFiles)fs.copyFileSync(executable,path.join(backendDirectory,path.basename(executable)),fs.constants.COPYFILE_EXCL);
 env.CODEX_CLI_PATH=cli;
 env.PATH=backendDirectory+path.delimiter+(env.PATH??env.Path??'');
-let fixtureServer,fixtureWebSockets;
+let fixtureServer,fixtureWebSockets,backend,backendCompletion,child;
+function spawnLogged(executable,args,options,output,error){
+  const descriptors=[];
+  try{
+    descriptors.push(fs.openSync(path.join(root,output),'wx'));
+    descriptors.push(fs.openSync(path.join(root,error),'wx'));
+    return spawn(executable,args,{...options,stdio:['ignore',...descriptors]});
+  }finally{for(const descriptor of descriptors)fs.closeSync(descriptor);}
+}
+try {
 let fixtureConfig='';
 if(config.localApiKeyFixture===true) {
   env.NO_PROXY='127.0.0.1,localhost,::1';
@@ -157,7 +166,7 @@ fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),fixtureConfig+'cli_auth
 const registry=prepareAcceptancePlugins(config,{root,baseUrl:env.OPENAI_BASE_URL});
 fs.writeFileSync(path.join(env.CODLET_HOME,'config.json'),JSON.stringify(registry,null,2));
 if(config.lifecyclePlugin!=null&&(typeof config.lifecyclePlugin!=='string'||!registry.localPlugins[config.lifecyclePlugin]||!(config.extraPlugins??[]).some(source=>JSON.parse(fs.readFileSync(path.join(source,'codlet.json'),'utf8')).id===config.lifecyclePlugin)))throw Error('lifecyclePlugin must name a trusted copied fixture');
-let backend,endpoint,port;
+let endpoint,port;
 if(config.ownedBackend===true) {
   if(config.localApiKeyFixture!==true)throw Error('ownedBackend requires the local API key fixture');
   env.CODLET_ACCEPTANCE_OWNED_BACKEND='1';
@@ -169,12 +178,14 @@ port=listener.address().port;
 await new Promise(r=>listener.close(r));
 endpoint=`ws://127.0.0.1:${port}`;
 env.CODEX_APP_SERVER_WS_URL=endpoint;
-backend=spawn(cli,['app-server','--listen',endpoint,'-c','sandbox_mode="read-only"','-c','analytics.enabled=false','-c','mcp_servers.codex_app={command="",enabled=false}'],{env,cwd:root,windowsHide:true,stdio:['ignore',fs.openSync(path.join(root,'backend.out.log'),'w'),fs.openSync(path.join(root,'backend.err.log'),'w')]});
+backend=spawnLogged(cli,['app-server','--listen',endpoint,'-c','sandbox_mode="read-only"','-c','analytics.enabled=false','-c','mcp_servers.codex_app={command="",enabled=false}'],{env,cwd:root,windowsHide:true},'backend.out.log','backend.err.log');
+let backendFailure;
+backendCompletion=new Promise(resolve=>{backend.once('exit',resolve);backend.once('error',error=>{backendFailure=error;resolve();});});
+backend.failure=()=>backendFailure;
 }
-let child;
-try {
   if(backend) {
   for(let i=0;i<100;i++) {
+    if(backend.failure())throw backend.failure();
     if(backend.exitCode!==null) throw Error('backend exited '+backend.exitCode);
     const open=await new Promise(r=>{const c=net.connect(port,'127.0.0.1');c.once('connect',()=>{c.destroy();r(true)});c.once('error',()=>r(false));});
     if(open) break;
@@ -186,7 +197,7 @@ try {
   await new Promise((resolve,reject)=>{
     const ws=new WebSocket(endpoint);const timeout=setTimeout(()=>{ws.close();reject(Error('backend handshake timeout'));},10000);
     ws.onopen=()=>ws.send(JSON.stringify({id:1,method:'initialize',params:{clientInfo:{name:'codlet-acceptance',version:'1'},capabilities:{experimentalApi:true}}}));
-    ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id===1){clearTimeout(timeout);ws.close();m.error?reject(Error(JSON.stringify(m.error))):resolve();}};
+    ws.onmessage=e=>{let m;try{m=JSON.parse(e.data);if(!m||typeof m!=='object'||Array.isArray(m))throw Error('Invalid backend handshake');}catch{clearTimeout(timeout);ws.close();reject(Error('Invalid backend handshake JSON'));return;}if(m.id===1){clearTimeout(timeout);ws.close();m.error?reject(Error(JSON.stringify(m.error))):resolve();}};
     ws.onerror=()=>{clearTimeout(timeout);reject(Error('backend websocket failure'));};
   });
   }
@@ -196,7 +207,7 @@ try {
   const entry=path.join(root,'start-core.cmd');
   if(/["\r\n]/.test(config.testBinary)) throw Error('invalid test binary path');
   fs.writeFileSync(entry,`@echo off\r\ncmd.exe /d /c exit 7\r\n"${config.testBinary.replaceAll('%','%%')}"\r\nexit /b %errorlevel%\r\n`);
-  child=spawn(env.COMSPEC||env.ComSpec||'C:/Windows/System32/cmd.exe',['/d','/s','/c',`"${entry}"`],{env,cwd:root,windowsHide:true,windowsVerbatimArguments:true,stdio:['ignore',fs.openSync(path.join(root,'core.out.log'),'w'),fs.openSync(path.join(root,'core.err.log'),'w')]});
+  child=spawnLogged(env.COMSPEC||env.ComSpec||'C:/Windows/System32/cmd.exe',['/d','/s','/c',`"${entry}"`],{env,cwd:root,windowsHide:true,windowsVerbatimArguments:true},'core.out.log','core.err.log');
   let auditing=false;
   const lifecycle=config.lifecyclePlugin&&setInterval(async()=>{
     if(auditing)return;
@@ -225,7 +236,8 @@ try {
   fs.writeFileSync(path.join(root,'completed.json'),JSON.stringify({exit:1,root,error:String(error)}));
   process.exitCode=1;
 } finally {
-  if(backend&&backend.exitCode===null){backend.kill();await new Promise(r=>backend.once('exit',r));}
+  if(backend?.pid&&backend.exitCode===null)backend.kill();
+  if(backendCompletion)await backendCompletion;
   if(fixtureWebSockets){for(const connection of fixtureWebSockets.clients)connection.terminate();await new Promise(resolve=>fixtureWebSockets.close(resolve));}
   if(fixtureServer){fixtureServer.closeAllConnections();await new Promise(resolve=>fixtureServer.close(resolve));}
 }

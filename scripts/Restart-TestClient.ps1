@@ -43,7 +43,14 @@ try {
     $codletStatePath = Join-Path $codletState.logs 'state.json'
     # Request quit only through this newly started coordinator's fixed mailbox.
     if (Test-CodletRestartProcess $codletState.managerPid $codletState.managerCreated) {
-        [IO.File]::WriteAllText((Join-Path $codletState.logs 'quit.request'), "quit`n")
+        for ($codletPath=$codletState.logs; $codletPath; $codletPath=[IO.Path]::GetDirectoryName($codletPath)) {
+            if ((Get-Item -LiteralPath $codletPath -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked coordinator mailbox directory' }
+        }
+        $codletMailbox = Join-Path $codletState.logs 'quit.request'
+        if (-not (Test-Path -LiteralPath $codletMailbox)) {
+            $codletRequest = [IO.File]::Open($codletMailbox, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try { $codletBytes=[Text.Encoding]::UTF8.GetBytes("quit`n"); $codletRequest.Write($codletBytes,0,$codletBytes.Length) } finally { $codletRequest.Dispose() }
+        }
     }
     $codletDeadline = [DateTime]::UtcNow.AddSeconds(45)
     do {

@@ -242,6 +242,20 @@ function Get-ConflictingProcesses {
     )
 }
 
+function Test-SameProcessIdentity {
+    param([object] $Left, [object] $Right)
+
+    if ([string]::IsNullOrWhiteSpace([string] $Left.executablePath) -or
+        [string]::IsNullOrWhiteSpace([string] $Left.startedAtUtc)) {
+        return $false
+    }
+    [int] $Left.processId -eq [int] $Right.processId -and
+        [int] $Left.parentProcessId -eq [int] $Right.parentProcessId -and
+        ([string] $Left.name).Equals([string] $Right.name, [StringComparison]::OrdinalIgnoreCase) -and
+        ([string] $Left.executablePath).Equals([string] $Right.executablePath, [StringComparison]::OrdinalIgnoreCase) -and
+        ([string] $Left.startedAtUtc).Equals([string] $Right.startedAtUtc, [StringComparison]::Ordinal)
+}
+
 function Write-CapturedLine {
     param(
         [string] $Stream,
@@ -536,14 +550,17 @@ if ($executionStatus -eq 'codlet_completed') {
     }
 
     if ($null -ne $afterSnapshot -and $null -eq $afterSnapshot.captureError) {
-        $beforeProcessIds = @($beforeSnapshot.processes | ForEach-Object { [int] $_.processId })
         $codletName = [IO.Path]::GetFileName($resolvedCodletPath).ToLowerInvariant()
         $unexpectedAfterProcesses = @(
             $afterSnapshot.processes | Where-Object {
-                $name = ([string] $_.name).ToLowerInvariant()
+                $afterProcess = $_
+                $name = ([string] $afterProcess.name).ToLowerInvariant()
+                $existedBefore = @($beforeSnapshot.processes | Where-Object {
+                    Test-SameProcessIdentity -Left $_ -Right $afterProcess
+                }).Count -gt 0
                 $name -eq 'chatgpt.exe' -or
                 $name -eq 'codex.exe' -or
-                ($name -eq $codletName -and $beforeProcessIds -notcontains [int] $_.processId)
+                ($name -eq $codletName -and -not $existedBefore)
             }
         )
         if ($unexpectedAfterProcesses.Count -gt 0) {

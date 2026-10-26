@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import {createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify} from 'node:crypto';
-import {readFile, writeFile, mkdir, readdir, lstat, realpath} from 'node:fs/promises';
+import {createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sign, verify} from 'node:crypto';
+import {readFile, writeFile, mkdir, readdir, lstat, realpath, rename, unlink} from 'node:fs/promises';
 import {resolve, dirname, relative, isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {deflateRawSync} from 'node:zlib';
@@ -315,8 +315,18 @@ async function main(args) {
     const incoming = validateUpdateManifest(JSON.parse(await readFile(opts['--incoming'],'utf8')),opts['--repository']);
     const previous = opts['--previous'] ? JSON.parse(await readFile(opts['--previous'],'utf8')) : undefined;
     const merged = createUpdateManifest(incoming.plugins,opts['--repository'],previous);
-    await mkdir(dirname(resolve(opts['--output'])),{recursive:true});
-    await writeFile(opts['--output'],JSON.stringify(merged,null,2)+'\n');
+    const output=resolve(opts['--output']),parent=dirname(output);
+    await mkdir(parent,{recursive:true});
+    const outputInfo=await lstat(output).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+    if(outputInfo&&(outputInfo.isSymbolicLink()||!outputInfo.isFile()||outputInfo.nlink!==1))throw Error('Merged channel output must be an ordinary unlinked file');
+    const actualOutput=pathIdentity(outputInfo?await realpath(output):resolve(await realpath(parent),relative(parent,output)));
+    for(const input of [opts['--incoming'],opts['--previous']].filter(Boolean)){
+      const actualInput=await realpath(input),info=await lstat(actualInput);
+      if(pathIdentity(actualInput)===actualOutput||outputInfo&&info.dev===outputInfo.dev&&info.ino===outputInfo.ino)throw Error('Merged channel output must not replace a versioned input');
+    }
+    const temporary=output+'.'+randomUUID()+'.tmp';
+    try{await writeFile(temporary,JSON.stringify(merged,null,2)+'\n',{flag:'wx'});await rename(temporary,output);}
+    finally{await unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
     console.log(JSON.stringify({output:resolve(opts['--output']),plugins:merged.plugins.map(entry=>({id:entry.payload.id,version:entry.payload.version}))},null,2));
     return;
   }

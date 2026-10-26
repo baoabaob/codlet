@@ -20,14 +20,25 @@ def digest(path):
         return checksum.hexdigest()
 
 
+def plain(path):
+    path = Path(os.path.abspath(path))
+    for component in (path, *path.parents):
+        if component.is_symlink() or getattr(component, "is_junction", lambda: False)():
+            raise ValueError(f"Linked runtime path: {component}")
+
+
 def install(destination, selected, archive_path=None):
     pin = json.loads((Path(__file__).resolve().parent.parent / "runtime/node-runtime.json").read_text(encoding="utf-8"))
     spec = pin["platforms"][selected]
     basename = f"node-v{spec.get('version', pin['version'])}-{selected}"
     executable = "bin/node" if selected == "darwin-arm64" else "node.exe"
-    runtime_root = Path(destination).resolve() / "runtime"
+    plain(destination)
+    runtime_root = Path(destination).absolute() / "runtime"
     target = runtime_root / basename
     expected = {executable: spec["executableSha256"], "LICENSE": spec["licenseSha256"]}
+    plain(runtime_root)
+    for name in expected:
+        plain(target / name)
     if target.exists():
         if target.is_symlink() or not all((target / name).is_file() and not (target / name).is_symlink() and digest(target / name) == checksum for name, checksum in expected.items()):
             raise ValueError(f"The existing runtime differs from its pin; repair {target}")
@@ -72,6 +83,7 @@ def install(destination, selected, archive_path=None):
             (prepared / executable).chmod(0o755)
         # Publish only a fully checked directory. An existing installation is
         # never recursively replaced by this development staging utility.
+        plain(target)
         prepared.rename(target)
     return target / executable
 

@@ -296,11 +296,17 @@ try {
     Assert-True -Condition (($earlyCodexExitReport.result.messages -join "`n") -match 'pipe-disconnect causality was not established') -Message 'the causal-order rejection must be explicit'
 } finally {
     $resolvedTempRoot = [IO.Path]::GetFullPath($tempRoot)
-    $resolvedSystemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $resolvedSystemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if (-not $resolvedTempRoot.StartsWith($resolvedSystemTemp, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove unexpected test directory: $resolvedTempRoot"
     }
-    Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force
+    $ancestor = $resolvedTempRoot
+    while (-not [string]::IsNullOrEmpty($ancestor)) {
+        if ((Get-Item -LiteralPath $ancestor).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing linked cleanup ancestor: $ancestor" }
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+    if (@(Get-ChildItem -LiteralPath $resolvedTempRoot -Recurse | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -gt 0) { throw 'Refusing linked cleanup entries.' }
+    Remove-Item -LiteralPath $resolvedTempRoot -Recurse
 }
 
 [Console]::Out.WriteLine('M0 crash acceptance PowerShell tests passed.')

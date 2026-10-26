@@ -1,8 +1,8 @@
 # M3 / M4 验收面板
 
-这个消费者使用版本化 capability 和主世界回调 API，不读取 Desktop 私有对象，不拥有 CDP 或独立后端连接。依赖可选的 Desktop Adapter。
+这个消费者使用版本化 capability 和主世界回调 API，不读取 Desktop 私有对象，不拥有 CDP 或独立后端连接。界面与 Desktop 能力由 Core 提供。
 
-适配器的权限和调用契约见[官方插件规范](https://github.com/baoabaob/codlet/blob/main/docs/history/adapters/spec/adapters.md)。在独立测试客户端安装后，右下角会出现 **M3 / M4** 按钮。
+权限和调用契约见[Core Codex SDK](../../docs/spec/codex.md)。在独立测试客户端安装后，右下角会出现 **M3 / M4** 按钮。
 
 1. 面板自动跟随当前窗口的本地任务及运行回合。也可“刷新任务”选择其他任务，再点“在本窗口打开”，等待 Native 恢复完成。
 2. “读取回合”和“模型 / 技能 / provider”验证读接口。

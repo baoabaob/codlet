@@ -26,12 +26,12 @@ function committedPicker(trigger,input,root) {
   }};
   // Counts distinguish stale DOM pointers, a foreign existing Native root and
   // an unknown component predicate. No root, fiber, source or identity escapes.
-  for(const key of Object.keys(trigger).filter(key=>key.startsWith('__reactFiber$')).slice(0,4)){
+  for(const key of Object.keys(trigger).filter(key=>key.startsWith('__reactFiber$'))){
     diagnostics.triggerAttachments++;const attached=trigger[key];
     if(attached?.stateNode===trigger)diagnostics.attachedHostMatches++;
     for(const start of [attached,attached?.alternate]){
       const seen=new Set();let fiber=start;
-      while(fiber&&!seen.has(fiber)&&seen.size<128){
+      while(fiber&&!seen.has(fiber)){
         seen.add(fiber);
         if(fiber.tag===3){
           const container=fiber.stateNode?.containerInfo,current=fiber.stateNode?.current;
@@ -50,10 +50,10 @@ function committedPicker(trigger,input,root) {
   let found=inspect(trigger,root,'trigger');if(found)return found;
   // A cloned trigger may retain a detached DOM attachment. Prove a nearby
   // committed host instead; never treat an unverified return chain as current.
-  for(let element=trigger.parentElement,depth=0;element&&root.contains(element)&&element!==input?.input&&depth++<16;element=element.parentElement){
+  for(let element=trigger.parentElement;element&&root.contains(element)&&element!==input?.input;element=element.parentElement){
     found=inspect(element,root,'ancestor');if(found)return found;
   }
-  for(const element of [...trigger.querySelectorAll('span,svg,path')].slice(0,16)){
+  for(const element of trigger.querySelectorAll('span,svg,path')){
     found=inspect(element,root,'descendant');if(found)return found;
   }
   // Search only the already-proven current input's component branch, not other
@@ -61,7 +61,7 @@ function committedPicker(trigger,input,root) {
   const inputChain=input&&currentElementAncestry(input.input,root),owner=inputChain?.find(fiber=>fiber.stateNode===input.input);
   diagnostics.inputChainDepth=inputChain?.length??0;
   const queue=owner?.child?[{fiber:owner.child,path:inputChain,depth:1}]:[],seen=new Set();
-  while(queue.length&&seen.size<2048){
+  while(queue.length){
     const {fiber,path,depth}=queue.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);visited++;
     diagnostics.maxRelativeDepth=Math.max(diagnostics.maxRelativeDepth,depth);
     if(fiber.stateNode===trigger){
@@ -74,12 +74,12 @@ function committedPicker(trigger,input,root) {
       if(picker)return{fiber:picker,proof:'input-branch',committed:true,visited,diagnostics};
     }
     if(fiber.sibling)queue.push({fiber:fiber.sibling,path,depth});
-    if(fiber.child){if(depth<128)queue.push({fiber:fiber.child,path:[fiber,...path],depth:depth+1});else diagnostics.truncatedDepth++;}
+    if(fiber.child)queue.push({fiber:fiber.child,path:[fiber,...path],depth:depth+1});
   }
   diagnostics.nodeLimitReached=queue.length>0;
   // Some Native control regions have their own React container. Its current
   // root must be inside this Native input and outside consumer-owned surfaces.
-  for(let element=trigger.parentElement,depth=0;input?.input.contains(element)&&depth++<16;element=element.parentElement){
+  for(let element=trigger.parentElement;input?.input.contains(element);element=element.parentElement){
     if(!element.closest(OWNED)&&Object.keys(element).some(key=>key.startsWith('__reactContainer$'))){
       found=inspect(trigger,element,'native-container');if(found)return found;
     }
@@ -92,9 +92,9 @@ function committedPicker(trigger,input,root) {
 export function permissionPickerEvidence(trigger,input,binding,root) {
   const {fiber,proof,committed,visited,diagnostics}=committedPicker(trigger,input,root),source=componentSource(fiber?.type),props=fiber?.memoizedProps;
   const arrays=fiber?.updateQueue?.memoCache?.data;
-  const cacheEvidence={arrayCount:Array.isArray(arrays)?Math.min(arrays.length,32):0,slotCount:0,configRecords:0,agentRecords:0,threadRecords:0};
+  const cacheEvidence={arrayCount:Array.isArray(arrays)?arrays.length:0,slotCount:0,configRecords:0,agentRecords:0,threadRecords:0};
   const seen=new Set();
-  for(const array of Array.isArray(arrays)?arrays.slice(0,32):[])for(const value of Array.isArray(array)?array.slice(0,512):[]){
+  for(const array of Array.isArray(arrays)?arrays:[])for(const value of Array.isArray(array)?array:[]){
     cacheEvidence.slotCount++;
     if(!value||typeof value!=='object'||seen.has(value))continue;seen.add(value);
     if('resolvedConfig'in value&&'requirements'in value&&typeof value.isConfigDataPending==='boolean')cacheEvidence.configRecords++;
@@ -116,7 +116,6 @@ export async function inspectNativePermissionOwnership(document) {
   const native={composerScope:brand('ComposerScope'),ThreadScope:brand('ThreadScope'),RouteScope:brand('RouteScope')};
   const input=nativeMainInput(document,native),binding=input&&nativeInputBinding(input,native),root=document.getElementById('root');
   const triggers=[...root.querySelectorAll('[data-composer-navigation-target="permissions"]')].filter(node=>!node.closest(OWNED+', [data-app-shell-active-page="false"]'));
-  if(triggers.length>8)throw Error('Permission trigger count exceeds read-only limit');
   const pickers=triggers.map(trigger=>permissionPickerEvidence(trigger,input,binding,root));
   let loadedThread=null;
   if(binding){

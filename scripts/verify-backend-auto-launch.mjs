@@ -14,7 +14,7 @@ const identity=verifyBackend(executable),root=fs.mkdtempSync(path.join(os.tmpdir
 const state={owned:new WeakSet(),trust:new WeakMap(),accounts:new WeakMap(),providers:new WeakMap(),records:new Set(),pending:new Set(),prepared:0};
 const routes=[];let hook,child;
 async function stop(){
-  if(!child||child.exitCode!==null||child.signalCode!==null)return;
+  if(!child?.pid||child.exitCode!==null||child.signalCode!==null)return;
   const ended=new Promise(resolve=>child.once('exit',resolve));child.stdin.end();
   let timer;await Promise.race([ended,new Promise(resolve=>timer=setTimeout(resolve,250))]);clearTimeout(timer);
   if(child.exitCode===null&&child.signalCode===null){child.kill();await ended;}

@@ -1,6 +1,10 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse } from '../../../frontend/node_modules/acorn/dist/acorn.mjs';
-const files=['X:/codlet-plugins/.artifacts/composer-native-26.1007/app-initial-b8e1c8014bb4.js','X:/codlet-plugins/.artifacts/composer-native-26.1007/app-shared-737655e1fb23.js'];
+const directory=process.argv[2]??fileURLToPath(new URL('../../../.artifacts/composer-native-26.1007/',import.meta.url));
+if(!path.isAbsolute(directory)||process.argv.length>3)throw Error('Supply one absolute captured Native cache directory');
+const files=['app-initial-b8e1c8014bb4.js','app-shared-737655e1fb23.js'].map(name=>path.join(directory,name));
 for(const file of files){
   const source=fs.readFileSync(file,'utf8'),ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),exports=new Map();
   for(const item of ast.body)if(item.type==='ExportNamedDeclaration')for(const spec of item.specifiers)exports.set(spec.local.name,spec.exported.name);

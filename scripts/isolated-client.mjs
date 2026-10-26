@@ -149,7 +149,15 @@ async function probe(endpoint, port, onboarding = false) {
   let id = 0;
   socket.addEventListener('message', event => {
     if (String(event.data).length > 4 * 1024 * 1024) { socket.close(); return; }
-    const message = JSON.parse(String(event.data));
+    let message;
+    try {
+      message = JSON.parse(String(event.data));
+      if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid backend message');
+    }
+    catch {
+      for (const call of pending.values()) { clearTimeout(call.timer); call.reject(new Error('Backend returned invalid JSON')); }
+      pending.clear(); socket.close(); return;
+    }
     const call = pending.get(message.id);
     if (!call) return;
     pending.delete(message.id); clearTimeout(call.timer);
@@ -393,20 +401,45 @@ async function start(recoverInterrupted = false) {
   // external helper can wait for this coordinator and replace the binary.
   return (restartAfterUpdate || restartAfterOnboarding) && state.state === 'closed' && state.hostExit?.code === 0;
 }
-async function rehearseUpdate() {
+function readCoordinatorState() {
+  if (plain(statePath).size > 262144) throw new Error('Coordinator state exceeds its size limit');
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  if (state.schema !== 1 || !Number.isSafeInteger(state.managerPid) || state.managerPid <= 0 ||
+      !new RegExp('^\\d+-' + state.managerPid + '$').test(state.runId) ||
+      typeof state.managerCreated !== 'string' || !state.managerCreated ||
+      typeof state.labRoot !== 'string' || path.resolve(state.labRoot).toLowerCase() !== root.toLowerCase()) throw new Error('Invalid coordinator owner');
+  const logs = path.join(root, 'logs', 'coordinator-' + state.runId);
+  if (typeof state.logs !== 'string' || path.resolve(state.logs).toLowerCase() !== logs.toLowerCase()) throw new Error('Invalid coordinator logs');
+  for (let directory = logs; directory.toLowerCase() !== root.toLowerCase(); directory = path.dirname(directory)) plain(directory, true);
+  return state;
+}
+async function requestMailbox(state, name, contents) {
+  const live = await ps("$labProcess=Get-Process -Id ([int]$env:CODLET_CHECK_PID) -ErrorAction SilentlyContinue; if ($labProcess) { [pscustomobject]@{created=$labProcess.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress } else { ConvertTo-Json -InputObject $null -Compress }", {CODLET_CHECK_PID: String(state.managerPid)});
+  if (live?.created !== state.managerCreated) throw new Error('The recorded coordinator owner has retired');
+  for (let directory = state.logs; directory.toLowerCase() !== root.toLowerCase(); directory = path.dirname(directory)) plain(directory, true);
+  const file = path.join(state.logs, name);
+  // Never follow or replace an existing mailbox. A repeated request is accepted
+  // only when the same plain, single-link file already holds the same command.
+  try { fs.writeFileSync(file, contents, {flag: 'wx'}); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (plain(file).size > 128 || fs.readFileSync(file, 'utf8') !== contents) throw new Error('Invalid existing coordinator mailbox');
+  }
+}
+async function rehearseUpdate() {
+  const state = readCoordinatorState();
   if (state.state !== 'ready' || !/^\d+-\d+$/.test(state.runId)) throw new Error('Start the test client before rehearsing an update restart');
   const logs = path.join(root, 'logs', 'coordinator-' + state.runId);
   if (path.resolve(state.logs).toLowerCase() !== logs.toLowerCase()) throw new Error('Invalid rehearsal owner');
-  fs.writeFileSync(path.join(logs, 'update-rehearsal.request'), state.runId, {flag:'wx'});
+  await requestMailbox(state, 'update-rehearsal.request', state.runId);
   console.log('Update restart rehearsal requested. No official package will be downloaded or installed.');
 }
 async function stop() {
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const state = readCoordinatorState();
   if (!['ready', 'starting', 'stopping','awaiting_authentication','awaiting_sandbox'].includes(state.state)) { console.log('Test client is not running.'); return; }
   const expected = path.join(root, 'logs', 'coordinator-' + state.runId, 'quit.request');
   if (path.resolve(state.quitFile).toLowerCase() !== expected.toLowerCase()) throw new Error('Invalid lab quit location');
-  fs.writeFileSync(expected, 'quit\n', { flag: 'w' });
+  await requestMailbox(state, 'quit.request', 'quit\n');
   console.log('Test client quit requested.');
 }
 async function plugins() {

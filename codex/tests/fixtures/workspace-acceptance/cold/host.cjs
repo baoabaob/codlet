@@ -17,7 +17,10 @@ module.exports={activate(context){timer=setTimeout(async()=>{
     let value;
     for(let attempt=0;attempt<80&&!context.signal.aborted;attempt++){
       const evaluated=await context.cdp.request('Runtime.evaluate',{expression,returnByValue:true},{sessionId});value=evaluated.result?.value;
-      if(value?.available&&value.phase==='idle')await context.cdp.request('Runtime.evaluate',{expression:'void globalThis[Symbol.for("codlet.workspace.cold.audit")].run();"started"',returnByValue:true},{sessionId});
+      if(value?.available&&value.phase==='idle'){
+        const argumentsPath=path.join(context.root,'targets.json'),args=fs.existsSync(argumentsPath)?JSON.parse(fs.readFileSync(argumentsPath,'utf8')):{};
+        await context.cdp.request('Runtime.evaluate',{expression:'void globalThis[Symbol.for("codlet.workspace.cold.audit")].run('+JSON.stringify(args)+');"started"',returnByValue:true},{sessionId});
+      }
       if(value?.result)break;
       await new Promise(resolve=>setTimeout(resolve,500));
     }

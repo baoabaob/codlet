@@ -90,10 +90,26 @@ jobs:
           python3 scripts/collect-rust-licenses.py
       - name: Build optional GUI package
         if: ${{ inputs.gui_commit != '' }}
+        env:
+          CODLET_PLUGIN_SIGNING_KEY_PEM: ${{ secrets.CODLET_PLUGIN_SIGNING_KEY_PEM }}
         run: |
           npm ci --prefix ../plugins/frontend
           node ../plugins/frontend/build.mjs
-          node ../plugins/scripts/package.mjs --output ../core/.codlet-artifacts/gui-bundle
+          node ../plugins/scripts/prepare-core-sdk.mjs "$PWD"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import {execFileSync} from 'node:child_process';
+          const key = process.env.CODLET_PLUGIN_SIGNING_KEY_PEM;
+          if (!key) throw Error('Bundled GUI builds require the retained CODLET_PLUGIN_SIGNING_KEY_PEM publisher secret');
+          const keyFile = path.join(process.env.RUNNER_TEMP, `codlet-gui-signing-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.pem`);
+          fs.writeFileSync(keyFile, key, {flag: 'wx', mode: 0o600});
+          try {
+            const env = {...process.env, CODLET_PLUGIN_SIGNING_KEY: keyFile};
+            delete env.CODLET_PLUGIN_SIGNING_KEY_PEM;
+            execFileSync(process.execPath, ['../plugins/scripts/package.mjs', '--output', '.codlet-artifacts/gui-bundle'], {stdio: 'inherit', env});
+          } finally { fs.unlinkSync(keyFile); }
+          JS
       - name: Read the reviewed Native fixture identity
         id: native
         run: |

@@ -1,6 +1,6 @@
 # Known issues and current limits
 
-This page records current behavior for **1.0.0-rc.7**. Candidate evidence and
+This page records current behavior for **1.0.0-rc.19**. Candidate evidence and
 remaining desktop acceptance are listed in [release readiness](release-readiness.md).
 
 ## Client capability discovery
@@ -12,7 +12,7 @@ probes, structural source discovery, entry-frame capture and per-capability reco
 See the [compatibility contract](spec/client-compatibility.md).
 
 Bootstrap corrections change resident code and take effect after a new start.
-The [current candidate record](releases/1.0.0-rc.7/validation.md) distinguishes
+The [current candidate record](releases/1.0.0-rc.19/validation.md) distinguishes
 fresh checks from earlier desktop evidence.
 
 ## Unified Core and compatible online updates

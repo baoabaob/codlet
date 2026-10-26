@@ -9,7 +9,7 @@ codlet plugin add .\examples\raw-m2 --trust --grant host.process --grant cdp.raw
 codlet launch
 ```
 
-To exercise the independent path, disable the optional GUI and UI adapter
+To exercise the independent path, disable the optional GUI
 before launch, or use a separate development registration as described in the
 [development guide](../../docs/development.md). The example selects
 page targets without depending on Codex private URLs. It adds no visible page UI.

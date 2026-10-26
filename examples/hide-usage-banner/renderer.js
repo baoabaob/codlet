@@ -81,6 +81,7 @@ module.exports = {
             for (const card of marked) restore(card);
             style.remove();
         };
+        context.onDeactivate?.(dispose);
         reconcile();
     },
     deactivate() {

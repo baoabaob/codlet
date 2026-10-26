@@ -164,11 +164,11 @@ async function scenario(mode) {
   } finally {
     if (releaseTimer) clearTimeout(releaseTimer);
     for (const child of [owner, lingering, updater]) {
-      const active = () => child && child.exitCode === null && child.signalCode === null;
+      const active = () => child?.pid && child.exitCode === null && child.signalCode === null;
       if (active()) child.kill('SIGTERM');
       if (active()) await new Promise(resolve => child.once('exit', resolve));
     }
-    fs.rmSync(temp, { recursive: true, force: true });
+    fs.rmSync(temp, { recursive: true });
   }
 }
 await scenario('installed');

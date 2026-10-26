@@ -32,7 +32,9 @@ module.exports = {
         return { status: response.status, headers: response.headers, body: response.body };
       },
       async webSocket(request, exchange) {
-        await exchange.forward({ url: target(request.path, 'websocket'), protocols: request.protocols, headers: forwardedHeaders(request.headers) });
+        // Subprotocols can contain credentials. Choose any required upstream
+        // protocol explicitly instead of inheriting the incoming list.
+        await exchange.forward({ url: target(request.path, 'websocket'), headers: forwardedHeaders(request.headers) });
       },
     });
     context.rpc.provide(capability, 'configure', (params, invocation) => {

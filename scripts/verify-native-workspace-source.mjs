@@ -4,27 +4,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { digest } from './lib/native-source-snapshot.mjs';
+import { digest, relativeSourcePath } from './lib/native-source-snapshot.mjs';
 import { resolveModulePath } from './lib/native-source-index.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), frontend = path.join(root, 'frontend');
 const require = createRequire(path.join(frontend, 'package.json')), { build } = require('esbuild');
 const [analysisPath, output] = process.argv.slice(2);
 if (!path.isAbsolute(analysisPath ?? '') || !path.isAbsolute(output ?? '') || fs.existsSync(output)) throw Error('Pass the analysis JSON and a new absolute report path');
 const analysis = JSON.parse(fs.readFileSync(analysisPath, 'utf8'));
+const metadata = fs.readFileSync(path.join(analysis.snapshot, 'snapshot.json'));
+if (digest(metadata) !== analysis.snapshotSha256) throw Error('Snapshot metadata changed after analysis');
+const files = new Map(JSON.parse(metadata).files.map(file => [file.path, file]));
 const bundle = await build({ absWorkingDir: frontend, stdin: {
   contents: 'export * from "../codex/frontend/src/adapter/workspace-source.js";export * from "../codex/frontend/src/adapter/workspace-native-viewport.js";export * from "../codex/frontend/src/adapter/workspace-role-contracts.js";export {parseExpressionAt} from "acorn";',
   resolveDir: frontend, sourcefile: 'native-source-verification.mjs', loader: 'js',
 }, bundle: true, write: false, metafile: true, platform: 'node', format: 'esm', target: 'node24', nodePaths: [path.join(frontend, 'node_modules')] });
 const api = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const sources = new Map(), checks = [];
-const read = candidate => {
-  if (!sources.has(candidate.file)) {
-    const text = fs.readFileSync(path.join(analysis.snapshot, 'sources', candidate.file), 'utf8');
-    if (digest(text) !== candidate.sha256) throw Error('Native source changed after analysis');
-    sources.set(candidate.file, text);
+const readFile = (filename, expectedSha256 = null) => {
+  const name = relativeSourcePath(filename), file = files.get(name);
+  if (!file || expectedSha256 !== null && file.sha256 !== expectedSha256) throw Error('Native source differs from snapshot metadata');
+  if (!sources.has(name)) {
+    const bytes = fs.readFileSync(path.join(analysis.snapshot, 'sources', name));
+    if (bytes.length !== file.bytes || digest(bytes) !== file.sha256) throw Error('Native source changed after analysis');
+    sources.set(name, bytes.toString('utf8'));
   }
-  return sources.get(candidate.file);
+  return sources.get(name);
 };
+const read = candidate => readFile(candidate.file, candidate.sha256);
 const check = (id, work) => {
   try { const detail = work(); checks.push({ id, status: 'passed', evidence: 'source', detail }); }
   catch (error) { checks.push({ id, status: 'failed', evidence: 'source', error: String(error.message) }); }
@@ -61,7 +67,7 @@ check('viewportPersistence', () => {
   const value = candidate('viewportPersistence'), found = api.viewportPersistenceReference(read(value));
   const file = found.source === null ? value.file : resolveModulePath(value.file, found.source);
   if (!file) throw Error('Persistence dependency is not a relative module');
-  const text = fs.readFileSync(path.join(analysis.snapshot, 'sources', file), 'utf8');
+  const text = readFile(file);
   if (!api.workspaceModuleSyntax(text).exports.some(entry => entry.exported === found.imported)) throw Error('Persistence import does not have a matching export');
   return { importer: value.file, file, sha256: digest(text), export: found.imported };
 });

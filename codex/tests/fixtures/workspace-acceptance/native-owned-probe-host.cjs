@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path');
+const { createHash } = require('node:crypto');
 const samePath = (left, right) => path.toNamespacedPath(path.resolve(left)).toLowerCase() === path.toNamespacedPath(path.resolve(right)).toLowerCase();
 let running, owned;
 async function probe(context) {
@@ -33,6 +34,7 @@ async function probe(context) {
       await context.cdp.request('Log.enable', {}, { sessionId });
     }
     const expression = fs.readFileSync(path.join(context.root, 'probe.js'), 'utf8');
+    if (createHash('sha256').update(expression).digest('hex') !== spec.expressionSha256) throw Error('Owned probe expression changed; rebuild and reverify before probing');
     if (spec.screenshot) {
       const screenshot = await context.cdp.request('Page.captureScreenshot', { format: 'png' }, { sessionId });
       fs.writeFileSync(path.join(context.root, 'native-shell.png'), Buffer.from(screenshot.data, 'base64'));

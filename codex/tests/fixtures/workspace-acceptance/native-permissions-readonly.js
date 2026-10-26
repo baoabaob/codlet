@@ -13,7 +13,7 @@ export async function capturePermissionReadOnly(){
     if(!binding)return{phase:'unsupported',diagnostic:{code:'permissions_not_selected',message:'No confirmed Native local conversation'}};
     const {manager}=localConnection(),reader=await loadNativePermissions({document,manager});
     const cache=currentPermissionCache(document,input),cwdValues=[...new Set(cache.cwds.map(value=>value.cwd))];
-    const initial=await import(loadedAsset('initial')),cyberModel=uniqueExport(initial,value=>typeof value==='function'&&value.length===1&&componentSource(value).length<180&&['toLowerCase','cyber','daybreak'].every(marker=>componentSource(value).includes(marker)),'Native model confirmation classification');
+    const initial=await import(loadedAsset('initial')),cyberModel=uniqueExport(initial,value=>typeof value==='function'&&value.length===1&&['toLowerCase','cyber','daybreak'].every(marker=>componentSource(value).includes(marker)),'Native model confirmation classification');
     const fullItems=cache.values.filter(value=>typeof value.props?.disabled==='boolean'&&value.props.children?.props?.id==='composer.permissionsDropdown.fullAccess.optionLabel');
     return {threadId:binding.threadId,hostId:'local',...(await reader.read(binding.threadId)),evidence:{cwdRecords:cache.cwds.length,cwdDistinct:cwdValues.length,
       cwdMatchesConversation:cwdValues.every(value=>value===manager.getConversation(binding.threadId)?.cwd),cwdShapesValid:cwdValues.every(value=>value===null||typeof value==='string'),
