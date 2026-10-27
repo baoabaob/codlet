@@ -172,6 +172,13 @@ impl QueuedCdpRequest {
             Ok(Ok(())) => Ok(self.request.take().unwrap()),
             Ok(Err(error)) => Err(request_error(error, request.id, &request.method)),
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                #[cfg(all(windows, feature = "desktop-acceptance"))]
+                request
+                    .client
+                    .inner
+                    .runtime
+                    .shared
+                    .trace_expiry(request.id, "writing");
                 request
                     .client
                     .inner

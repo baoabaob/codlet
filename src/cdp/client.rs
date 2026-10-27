@@ -15,6 +15,8 @@ use super::framing::{FramingError, NulJsonDecoder, encode_json_frame};
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[cfg(all(windows, feature = "desktop-acceptance"))]
+mod acceptance_trace;
 mod contexts;
 #[cfg(all(test, windows))]
 mod core_rpc_vm_tests;
@@ -27,6 +29,7 @@ mod m2_raw_vm_tests;
 #[cfg(all(test, windows))]
 mod main_world_vm_tests;
 mod raw_access;
+mod session_retirement;
 pub use raw_access::{BoundedCdpEvents, CdpEventFilter, QueuedCdpRequest};
 use raw_access::{BoundedEventSink, RawWritePermit};
 
@@ -185,6 +188,8 @@ struct State {
     next_event_registration_id: u64,
     activity_epoch: u64,
     sessions: HashMap<String, (String, Weak<AtomicBool>)>,
+    retiring_sessions: HashMap<String, session_retirement::RetiringSession>,
+    retirement_requests: HashMap<u64, String>,
     default_contexts: contexts::DefaultContexts,
 }
 
@@ -192,6 +197,8 @@ struct Shared {
     state: Mutex<State>,
     closed: Condvar,
     activity: Condvar,
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
+    acceptance_trace: Mutex<acceptance_trace::TraceState>,
 }
 
 enum WriterCommand {
@@ -201,6 +208,7 @@ enum WriterCommand {
         timeout_error: Arc<ConnectionError>,
         completion: mpsc::Sender<Result<(), Arc<ConnectionError>>>,
         raw_permit: Option<RawWritePermit>,
+        retirement: Option<(u64, String)>,
     },
     Shutdown,
 }
@@ -516,10 +524,14 @@ impl CdpClient {
                 next_event_registration_id: 2,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                retiring_sessions: HashMap::new(),
+                retirement_requests: HashMap::new(),
                 default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            acceptance_trace: Mutex::default(),
         });
         let (writer_sender, writer_receiver) = mpsc::channel();
         let cancellation = Arc::new(WorkerCancellation {
@@ -698,6 +710,14 @@ impl CdpClient {
             // An exhausted nested budget must not enqueue a zero-budget write:
             // the transport treats a write timeout as a connection failure.
             if Instant::now() >= expires_at {
+                #[cfg(all(windows, feature = "desktop-acceptance"))]
+                self.inner.runtime.shared.trace_before_enqueue_expiry(
+                    id,
+                    method,
+                    session_id,
+                    &request.params,
+                    &state,
+                );
                 return Err(ClientError::RequestTimedOut {
                     id,
                     method: method.to_owned(),
@@ -713,6 +733,7 @@ impl CdpClient {
                     timeout_error: Arc::clone(&timeout_error),
                     completion: write_sender,
                     raw_permit,
+                    retirement: None,
                 })
                 .is_err()
             {
@@ -741,6 +762,15 @@ impl CdpClient {
                     .is_none()
             );
             state.last_issued_id = id;
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            self.inner.runtime.shared.trace_enqueue(
+                id,
+                method,
+                session_id,
+                &request.params,
+                expires_at,
+                &state,
+            );
         }
         *next_id = following_id;
         drop(next_id);
@@ -844,14 +874,10 @@ impl CdpClient {
     }
 
     pub fn closed_reason(&self) -> Option<Arc<ConnectionError>> {
-        self.inner
-            .runtime
-            .shared
-            .state
-            .lock()
-            .expect("CDP state poisoned")
-            .terminal
-            .clone()
+        let shared = &self.inner.runtime.shared;
+        let mut state = shared.state.lock().expect("CDP state poisoned");
+        session_retirement::observe_deadlines(shared, &mut state);
+        state.terminal.clone()
     }
 
     pub fn wait_closed(&self, timeout: Duration) -> Option<Arc<ConnectionError>> {
@@ -893,6 +919,8 @@ impl CdpClient {
             return Err(Arc::clone(error));
         }
         if state.pending.remove(&id).is_some() {
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            self.inner.runtime.shared.trace_expiry(id, "response");
             return Ok(None);
         }
         drop(state);
@@ -1160,7 +1188,13 @@ fn writer_loop<W: Write>(
                 timeout_error,
                 completion,
                 mut raw_permit,
+                retirement,
             } => {
+                if let Some((id, session)) = &retirement
+                    && !session_retirement::begin_write(&runtime.shared, *id, session, expires_at)
+                {
+                    continue;
+                }
                 if runtime
                     .shared
                     .state
@@ -1171,7 +1205,11 @@ fn writer_loop<W: Write>(
                 {
                     return;
                 }
-                if Instant::now() >= expires_at {
+                if retirement.is_none() && Instant::now() >= expires_at {
+                    #[cfg(all(windows, feature = "desktop-acceptance"))]
+                    if let ConnectionError::RequestTimedOut { id, .. } = &*timeout_error {
+                        runtime.shared.trace_expiry(*id, "before_write");
+                    }
                     let _ = completion.send(Err(Arc::clone(&timeout_error)));
                     if raw_permit.is_some() {
                         continue;
@@ -1185,6 +1223,10 @@ fn writer_loop<W: Write>(
                     let _ = completion.send(Err(timeout_error));
                     continue;
                 }
+                #[cfg(all(windows, feature = "desktop-acceptance"))]
+                if let ConnectionError::RequestTimedOut { id, .. } = &*timeout_error {
+                    runtime.shared.trace_writing(*id);
+                }
                 if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
                     let error = Arc::new(ConnectionError::Framing(FramingError::Write {
                         message: error.to_string(),
@@ -1192,6 +1234,13 @@ fn writer_loop<W: Write>(
                     let _ = completion.send(Err(Arc::clone(&error)));
                     runtime.stop(error);
                     return;
+                }
+                if let Some((id, session)) = &retirement {
+                    session_retirement::written(&runtime.shared, *id, session);
+                }
+                #[cfg(all(windows, feature = "desktop-acceptance"))]
+                if let ConnectionError::RequestTimedOut { id, .. } = &*timeout_error {
+                    runtime.shared.trace_written(*id);
                 }
                 let _ = completion.send(Ok(()));
             }
@@ -1254,6 +1303,8 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
         session_id: optional_string(object, "sessionId")?,
     };
     let mut state = shared.state.lock().expect("CDP state poisoned");
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
+    shared.trace_target_event(&event);
     let ended: Vec<_> = state
         .sessions
         .iter()
@@ -1290,6 +1341,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
         .collect();
     for session in &ended {
         state.default_contexts.forget(session);
+        session_retirement::ended(shared, &mut state, session, "session_ended");
     }
     if event.session_id.as_ref().is_some_and(|id| {
         state
@@ -1329,6 +1381,11 @@ fn route_response(
         .as_u64()
         .ok_or_else(|| ConnectionError::Protocol("response id is not a u64".to_owned()))?;
     let mut state = shared.state.lock().expect("CDP state poisoned");
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
+    shared.trace_response(id, object);
+    if state.retirement_requests.contains_key(&id) {
+        return session_retirement::response(shared, &mut state, id, object);
+    }
     let Some(pending) = state.pending.get(&id) else {
         // Retired and duplicate responses may arrive arbitrarily late. The contiguous issued-ID
         // watermark is O(1), while zero and IDs above it are known never-issued and fail closed.
@@ -1449,6 +1506,7 @@ fn terminate(shared: &Arc<Shared>, error: Arc<ConnectionError>) {
             return;
         }
         state.terminal = Some(Arc::clone(&error));
+        session_retirement::connection_ended(shared, &mut state);
         state.activity_epoch = state
             .activity_epoch
             .checked_add(1)
@@ -1732,10 +1790,14 @@ mod tests {
                     next_event_registration_id: 1,
                     activity_epoch: 0,
                     sessions: HashMap::new(),
+                    retiring_sessions: HashMap::new(),
+                    retirement_requests: HashMap::new(),
                     default_contexts: contexts::DefaultContexts::default(),
                 }),
                 closed: Condvar::new(),
                 activity: Condvar::new(),
+                #[cfg(all(windows, feature = "desktop-acceptance"))]
+                acceptance_trace: Mutex::default(),
             }),
             response_receiver,
         )
@@ -1886,10 +1948,14 @@ mod tests {
                 next_event_registration_id: 4,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                retiring_sessions: HashMap::new(),
+                retirement_requests: HashMap::new(),
                 default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            acceptance_trace: Mutex::default(),
         });
 
         route_message(
@@ -1939,10 +2005,14 @@ mod tests {
                 next_event_registration_id: 2,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                retiring_sessions: HashMap::new(),
+                retirement_requests: HashMap::new(),
                 default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            acceptance_trace: Mutex::default(),
         });
 
         terminate(&shared, Arc::new(ConnectionError::Eof));
@@ -2193,10 +2263,14 @@ mod tests {
                 next_event_registration_id: 1,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                retiring_sessions: HashMap::new(),
+                retirement_requests: HashMap::new(),
                 default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            acceptance_trace: Mutex::default(),
         });
         let (writer_sender, _writer_receiver) = mpsc::channel();
         let cancellation = Arc::new(WorkerCancellation::default());

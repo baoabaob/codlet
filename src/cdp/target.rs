@@ -152,27 +152,39 @@ impl TargetSession {
             }
         }
         drop(attachment_events);
-        client.request(
-            "Runtime.enable",
-            None,
-            Some(&attach.session_id),
-            remaining_budget(expires_at),
-        )?;
-        client.request(
-            "Page.enable",
-            None,
-            Some(&attach.session_id),
-            remaining_budget(expires_at),
-        )?;
-
-        Ok(Self {
+        let session = Self {
             client,
             target_id,
             session_id: attach.session_id,
             deadline,
             expires_at: None,
             live,
-        })
+        };
+        let initialized = (|| -> Result<(), ClientError> {
+            session.client.request(
+                "Runtime.enable",
+                None,
+                Some(&session.session_id),
+                remaining_budget(expires_at),
+            )?;
+            session.client.request(
+                "Page.enable",
+                None,
+                Some(&session.session_id),
+                remaining_budget(expires_at),
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = initialized {
+            session.client.retire_failed_session(
+                &session.target_id,
+                &session.session_id,
+                &session.live,
+                deadline,
+            );
+            return Err(error.into());
+        }
+        Ok(session)
     }
 
     pub fn target_id(&self) -> &str {
@@ -325,7 +337,23 @@ impl TargetController {
                     .result
                     .ok_or_else(|| TargetError::InvalidGetTargets("missing result".to_owned()))?,
             )?;
-            let sessions = controller.attach_matching(&observations, expires_at)?;
+            let sessions = match controller.attach_matching(&observations, expires_at) {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    // None of this discovery transaction's sessions has reached
+                    // its caller. Roll back its already initialized siblings as
+                    // well as the failed session; unrelated owners stay live.
+                    for session in controller.sessions.values() {
+                        session.client.retire_failed_session(
+                            &session.target_id,
+                            &session.session_id,
+                            &session.live,
+                            session.deadline,
+                        );
+                    }
+                    return Err(error);
+                }
+            };
             if !sessions.is_empty() {
                 return Ok((controller, sessions));
             }
@@ -424,7 +452,9 @@ impl TargetController {
             .iter()
             .filter(|target| is_main_renderer(target))
         {
-            if self.sessions.contains_key(&observation.target_id) {
+            if self.sessions.contains_key(&observation.target_id)
+                || self.client.target_is_retiring(&observation.target_id)
+            {
                 continue;
             }
             let session = match TargetSession::attach(
