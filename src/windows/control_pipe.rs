@@ -1,6 +1,7 @@
 //! Authenticated local management transport. Both listeners perform bounded IO
 //! and mailbox operations only; renderer execution stays on its foreground owner.
 use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use std::sync::Arc;
@@ -8,9 +9,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED, WAIT_TIMEOUT,
+    ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED,
+    ERROR_SEM_TIMEOUT, GetLastError, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
+use windows_sys::Win32::System::Pipes::{DisconnectNamedPipe, WaitNamedPipeW};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetEvent, WaitForSingleObject};
 
 pub use super::control_scope::{RegistryScope, RegistryScopeGuard};
@@ -305,7 +307,7 @@ fn exchange_expected(
             );
         }
     };
-    let pipe = match open_client(name) {
+    let pipe = match open_control_client(name, deadline) {
         Ok(pipe) => pipe,
         Err(ControlPipeError::Win32 {
             code: ERROR_FILE_NOT_FOUND,
@@ -322,7 +324,7 @@ fn exchange_expected(
         }) => {
             return failure(
                 ControlStatus::Busy,
-                "Host control endpoint is serving another client",
+                "Host control endpoint remained busy until the query deadline; no request was sent",
             );
         }
         Err(error) => return failure(ControlStatus::CommunicationError, error),
@@ -367,6 +369,61 @@ fn exchange_expected(
         );
     }
     finish_acknowledged_response(report, &identity)
+}
+
+fn open_control_client(name: &OsStr, deadline: Instant) -> Result<OwnedHandle, ControlPipeError> {
+    open_control_client_with(name, deadline, open_client)
+}
+
+fn open_control_client_with(
+    name: &OsStr,
+    deadline: Instant,
+    mut open: impl FnMut(&OsStr) -> Result<OwnedHandle, ControlPipeError>,
+) -> Result<OwnedHandle, ControlPipeError> {
+    let mut wide: Vec<_> = name.encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(ControlPipeError::Invalid("embedded NUL".into()));
+    }
+    wide.push(0);
+    loop {
+        match open(name) {
+            Err(
+                busy @ ControlPipeError::Win32 {
+                    code: ERROR_PIPE_BUSY,
+                    ..
+                },
+            ) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(busy);
+                }
+                // Zero means the server's default wait and MAX means infinity.
+                // Round only the Win32 millisecond representation of this same
+                // absolute query budget; do not start another request budget.
+                let millis = remaining
+                    .as_nanos()
+                    .div_ceil(1_000_000)
+                    .min(u128::from(u32::MAX - 1)) as u32;
+                // SAFETY: wide is NUL terminated and remains live for the wait.
+                if unsafe { WaitNamedPipeW(wide.as_ptr(), millis) } == 0 {
+                    let code = unsafe { GetLastError() };
+                    if code == ERROR_SEM_TIMEOUT {
+                        return Err(busy); // Still pre-connect: no body was sent.
+                    }
+                    return Err(ControlPipeError::Win32 {
+                        operation: "WaitNamedPipeW(control)",
+                        code,
+                    });
+                }
+                if Instant::now() >= deadline {
+                    return Err(busy);
+                }
+                // Availability does not reserve an instance. Another client may
+                // win this open; only pre-connect Busy can return to this loop.
+            }
+            result => return result,
+        }
+    }
 }
 
 fn finish_acknowledged_response(report: ControlReport, identity: &ServerIdentity) -> ControlReport {
@@ -686,10 +743,15 @@ mod tests {
             .write_all(&[10], Instant::now() + CONTROL_QUERY_TIMEOUT)
             .unwrap();
         let broker = server.broker();
-        assert_eq!(
-            query(&scope, &ControlRequest::identify()).status,
-            ControlStatus::Busy
-        );
+        // The occupied instance is causal; a public query now waits for this
+        // transaction to finish rather than immediately reporting Busy.
+        assert!(matches!(
+            open_client(scope.pipe_name()),
+            Err(ControlPipeError::Win32 {
+                code: ERROR_PIPE_BUSY,
+                ..
+            })
+        ));
         let started = Instant::now();
         drop(server);
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -1130,5 +1192,237 @@ mod tests {
         worker.join().unwrap();
         let completed = finish_acknowledged_response(report, &identity);
         assert_eq!(completed, expected, "post-ACK result: {completed:?}");
+    }
+
+    #[test]
+    fn prepare_ack_disconnect_busy_window_waits_before_submitting_the_same_receipt() {
+        let name = name();
+        let server = Channel {
+            pipe: create_server_pipe(&name).unwrap(),
+            event: create_event().unwrap(),
+            stop: Arc::new(create_event().unwrap()),
+        };
+        let broker = ControlBroker::new([5; 16], "a".repeat(64));
+        broker.set_ready();
+        let worker_broker = broker.clone();
+        let executable = std::env::current_exe().unwrap();
+        let worker_executable = executable.clone();
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+        let (disconnect_tx, disconnect_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = thread::spawn(move || -> Result<(), ControlPipeError> {
+            server.connect_until(Some(Instant::now() + CONTROL_QUERY_TIMEOUT))?;
+            serve_transaction(
+                &server,
+                &worker_broker,
+                &worker_executable,
+                false,
+                Instant::now() + CONTROL_QUERY_TIMEOUT,
+            )?;
+            // The real Prepare response ACK has arrived. Retain this connected
+            // instance until the next client proves its actual ERROR_PIPE_BUSY.
+            ack_tx.send(()).unwrap();
+            disconnect_rx.recv_timeout(CONTROL_QUERY_TIMEOUT).unwrap();
+            assert_ne!(unsafe { DisconnectNamedPipe(raw(&server.pipe)) }, 0);
+            server.connect_until(Some(Instant::now() + CONTROL_QUERY_TIMEOUT))?;
+            serve_transaction(
+                &server,
+                &worker_broker,
+                &worker_executable,
+                false,
+                Instant::now() + CONTROL_QUERY_TIMEOUT,
+            )
+        });
+        let prepared = exchange_expected(
+            &name,
+            Some(&"a".repeat(64)),
+            &ControlRequest::prepare(request()),
+            CONTROL_QUERY_TIMEOUT,
+            &executable,
+        );
+        assert_eq!(prepared.status, ControlStatus::Prepared, "{prepared:?}");
+        ack_rx.recv_timeout(CONTROL_QUERY_TIMEOUT).unwrap();
+        let ticket = prepared.operation_id().unwrap().to_owned();
+        assert!(broker.take_next().is_none());
+        let (busy_tx, busy_rx) = std::sync::mpsc::sync_channel(1);
+        let submit_ticket = ticket.clone();
+        let submit = thread::spawn(move || -> Result<ControlReport, ControlPipeError> {
+            let deadline = Instant::now() + CONTROL_QUERY_TIMEOUT;
+            let mut notified = false;
+            let pipe = open_control_client_with(&name, deadline, |name| {
+                let result = open_client(name);
+                if !notified
+                    && matches!(
+                        result,
+                        Err(ControlPipeError::Win32 {
+                            code: ERROR_PIPE_BUSY,
+                            ..
+                        })
+                    )
+                {
+                    notified = true;
+                    busy_tx.send(()).unwrap();
+                }
+                result
+            })?;
+            let identity = ServerIdentity::verify(&pipe, &executable)?;
+            let channel = Channel {
+                pipe,
+                event: create_event()?,
+                stop: Arc::new(create_event()?),
+            };
+            let request = ControlRequest::submit(&submit_ticket);
+            channel.write_frame(&serde_json::to_vec(&request).unwrap(), deadline)?;
+            let bytes = channel.read_frame(MAX_CONTROL_RESPONSE_BYTES, deadline)?;
+            identity.check_live(&channel.pipe)?;
+            let report = decode_response(&bytes, identity.pid, Some(&"a".repeat(64)), &request);
+            channel.write_all(&[RESPONSE_ACK], deadline)?;
+            Ok(finish_acknowledged_response(report, &identity))
+        });
+        busy_rx
+            .recv_timeout(CONTROL_QUERY_TIMEOUT)
+            .expect("the real occupied instance must reject the second open before Disconnect");
+        assert_eq!(
+            broker.handle(ControlRequest::result(&ticket)).status,
+            ControlStatus::Prepared
+        );
+        disconnect_tx.send(()).unwrap();
+        let submitted = submit.join().unwrap();
+        let server_result = worker.join().unwrap();
+        assert!(
+            submitted.is_ok(),
+            "pre-send Busy was not awaited: {submitted:?}; server={server_result:?}"
+        );
+        assert_eq!(submitted.unwrap().status, ControlStatus::Queued);
+        server_result.unwrap();
+        let job = broker.take_next().unwrap();
+        assert_eq!(job.operation_id, ticket);
+        assert_eq!(job.request, request());
+        assert!(
+            broker.take_next().is_none(),
+            "the single submitted body must create one job"
+        );
+    }
+
+    #[test]
+    fn preconnect_busy_exhausts_only_the_original_budget_without_sending_a_body() {
+        let name = name();
+        let server = Channel {
+            pipe: create_server_pipe(&name).unwrap(),
+            event: create_event().unwrap(),
+            stop: Arc::new(create_event().unwrap()),
+        };
+        let client = channel(&name);
+        server.connect().unwrap();
+        let budget = Duration::from_millis(40);
+        let started = Instant::now();
+        let result = exchange_expected(
+            &name,
+            None,
+            &ControlRequest::prepare(request()),
+            budget,
+            &std::env::current_exe().unwrap(),
+        );
+        assert_eq!(result.status, ControlStatus::Busy, "{result:?}");
+        assert!(result.error.unwrap().contains("no request was sent"));
+        assert!(started.elapsed() >= budget);
+        assert!(started.elapsed() < CONTROL_QUERY_TIMEOUT);
+        let mut available = 0;
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::Pipes::PeekNamedPipe(
+                    raw(&server.pipe),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            available, 0,
+            "a failed pre-connect attempt must not write a body into the occupied transaction"
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn missing_control_endpoint_is_not_waited_for_or_reclassified_as_busy() {
+        let started = Instant::now();
+        let result = exchange_expected(
+            &name(),
+            None,
+            &ControlRequest::identify(),
+            Duration::from_secs(5),
+            &std::env::current_exe().unwrap(),
+        );
+        assert_eq!(result.status, ControlStatus::NotRunning, "{result:?}");
+        assert!(
+            started.elapsed() < CONTROL_QUERY_TIMEOUT,
+            "an absent endpoint must return without consuming the wait budget"
+        );
+    }
+
+    #[test]
+    fn a_written_submit_with_a_lost_response_is_not_reconnected_or_replayed() {
+        let name = name();
+        let server = Channel {
+            pipe: create_server_pipe(&name).unwrap(),
+            event: create_event().unwrap(),
+            stop: Arc::new(create_event().unwrap()),
+        };
+        let broker = ControlBroker::new([6; 16], "a".repeat(64));
+        broker.set_ready();
+        let prepared = broker.handle(ControlRequest::prepare(request()));
+        let ticket = prepared.operation_id().unwrap().to_owned();
+        let sent_ticket = ticket.clone();
+        let worker_broker = broker.clone();
+        let executable = std::env::current_exe().unwrap();
+        let worker_executable = executable.clone();
+        let (received_tx, received_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let received = Arc::new(AtomicUsize::new(0));
+        let worker_received = received.clone();
+        let worker = thread::spawn(move || {
+            server.connect().unwrap();
+            let identity = ServerIdentity::verify_client(&server.pipe, &worker_executable).unwrap();
+            let bytes = server
+                .read_frame(
+                    MAX_CONTROL_REQUEST_BYTES,
+                    Instant::now() + CONTROL_QUERY_TIMEOUT,
+                )
+                .unwrap();
+            identity.check_live(&server.pipe).unwrap();
+            let request = decode_request(&bytes).unwrap();
+            assert!(matches!(request, ControlRequest::Submit { .. }));
+            worker_received.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(worker_broker.handle(request).status, ControlStatus::Queued);
+            received_tx.send(()).unwrap();
+            // No response: keep the real transaction owned until the client has
+            // reported its original absolute read deadline, then retire it.
+            release_rx.recv_timeout(CONTROL_QUERY_TIMEOUT * 2).unwrap();
+        });
+        let client = thread::spawn(move || {
+            exchange_expected(
+                &name,
+                Some(&"a".repeat(64)),
+                &ControlRequest::submit(&sent_ticket),
+                CONTROL_QUERY_TIMEOUT,
+                &executable,
+            )
+        });
+        received_rx.recv_timeout(CONTROL_QUERY_TIMEOUT).unwrap();
+        assert_eq!(
+            broker.handle(ControlRequest::result(&ticket)).status,
+            ControlStatus::Queued
+        );
+        let result = client.join().unwrap();
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(result.status, ControlStatus::Timeout, "{result:?}");
+        assert_eq!(received.load(Ordering::SeqCst), 1);
+        assert_eq!(broker.take_next().unwrap().operation_id, ticket);
+        assert!(broker.take_next().is_none());
     }
 }
