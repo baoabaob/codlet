@@ -48,6 +48,8 @@ Repeated valid receipt submission is idempotent in Core, but clients must not in
 
 The GUI remains an ordinary independently registered package and can uninstall itself. UI/Desktop provider identities `codex.ui.adapter` and `codex.desktop.adapter` are owned by Core; public disable/reload/revoke/import/update operations cannot replace them. Saved legacy adapter registrations are reported as `supersededByCore` and are never executed. Removing one clears its old plugin data while internal providers and consumers continue running. Lists expose `coreProviders` and `legacyAdapterRegistrations` separately from ordinary `plugins`.
 
+Each `runtime.manage.list` `coreProviders` row reports the Core distribution `version`, the implementation's `compatibilityVersion` for historical acceptance requirements, and its observed `available` state. `clientStatus` uses those Core-owned facts; an unavailable provider cannot be replaced by a saved legacy registration when evaluating compatibility.
+
 Online commands identify the matching runtime and share its receipt. Offline mutations require proving that registry has no running owner; they save next-start intent, not an active-state claim. Reload requires a live runtime. Safe mode permits disable, revoke and uninstall with owned-data cleanup; it does not admit activation/import/update.
 
 ## Local import and live information

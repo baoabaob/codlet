@@ -198,7 +198,7 @@ impl RuntimeManageService {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        list["clientStatus"] = self.client_version_status(&list["plugins"]);
+        list["clientStatus"] = self.client_version_status(list);
         if self.local_registry.is_some() {
             list["localManagement"] = serde_json::json!({"available":true, "clientPermissions":true, "installationLifecycle":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
             list["githubManagement"] = serde_json::json!({"available":true});
@@ -289,10 +289,10 @@ impl RuntimeManageService {
             .clone()
     }
 
-    fn client_version_status(&self, plugins: &Value) -> Value {
+    fn client_version_status(&self, listing: &Value) -> Value {
         self.client_compatibility_service().map_or_else(
             || serde_json::json!({"status":"unknown"}),
-            |service| service.status(plugins),
+            |service| service.status(listing),
         )
     }
 
@@ -364,15 +364,15 @@ impl RuntimeManageService {
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref()
                 .map(|service| service.status());
-            let plugins = self
+            let listing = self
                 .listing
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref()
                 .ok()
-                .map(|listing| listing["plugins"].clone())
+                .cloned()
                 .unwrap_or(Value::Null);
-            let client = self.client_version_status(&plugins);
+            let client = self.client_version_status(&listing);
             return bounded_value(
                 serde_json::json!({"runtimeVersion":env!("CARGO_PKG_VERSION"),"runtimeUpdate":update,
                 "runtimeUpdateError":update.is_none().then(||serde_json::json!({"code":"runtime_update_unavailable","message":"Runtime updates are unavailable for this launcher."})),

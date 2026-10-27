@@ -484,7 +484,7 @@ impl ClientCompatibility {
     pub(crate) fn stop(&self) {
         self.0.stop();
     }
-    pub(crate) fn status(&self, plugins: &Value) -> Value {
+    pub(crate) fn status(&self, listing: &Value) -> Value {
         let state = self
             .0
             .state
@@ -495,7 +495,7 @@ impl ClientCompatibility {
             &self.0.running,
             &self.0.platform,
             env!("CARGO_PKG_VERSION"),
-            plugins,
+            listing,
         )
     }
     pub(crate) fn verified_pair(&self, client_version: &str, core_version: &str) -> bool {
@@ -632,7 +632,7 @@ fn refresh_loop(input: RefreshInput, source: String, receiver: mpsc::Receiver<()
     }
 }
 
-fn status(state: &State, running: &str, platform: &str, core: &str, plugins: &Value) -> Value {
+fn status(state: &State, running: &str, platform: &str, core: &str, listing: &Value) -> Value {
     let records: Vec<_> = state
         .catalog
         .records
@@ -649,11 +649,32 @@ fn status(state: &State, running: &str, platform: &str, core: &str, plugins: &Va
             missing.push(json!({"kind":"core","minimumVersion":record.minimum_core_version,"currentVersion":core}));
         }
         for (id, minimum) in &record.required_adapters {
-            let installed = plugins
+            // Core's historical routing IDs no longer appear in plugins. A
+            // published Core row is authoritative even when unavailable: a
+            // superseded user registration must not upgrade that observation.
+            let internal = listing["coreProviders"]
+                .as_array()
+                .and_then(|providers| providers.iter().find(|provider| provider["id"] == *id));
+            let installed = listing
+                .get("plugins")
+                .unwrap_or(listing)
                 .as_array()
                 .and_then(|plugins| plugins.iter().find(|plugin| plugin["id"] == *id));
-            let version = installed.and_then(|plugin| plugin["version"].as_str());
-            let active = installed.is_some_and(|plugin| plugin["active"] == true);
+            let (version, active) = if listing.get("coreProviders").is_some() {
+                if let Some(provider) = internal.filter(|provider| provider["owner"] == "core") {
+                    (
+                        provider["compatibilityVersion"].as_str(),
+                        provider["available"] == true,
+                    )
+                } else {
+                    (None, false)
+                }
+            } else {
+                (
+                    installed.and_then(|plugin| plugin["version"].as_str()),
+                    installed.is_some_and(|plugin| plugin["active"] == true),
+                )
+            };
             if !active || version.is_none_or(|version| !at_least(version, minimum)) {
                 missing.push(json!({"kind":"adapter","id":id,"minimumVersion":minimum,"currentVersion":version,"active":active}));
             }

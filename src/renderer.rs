@@ -2531,5 +2531,8 @@ fn builtin_manage_capability() -> CapabilityDescriptor {
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(test, windows))]
+mod compatibility_tests;
+
 #[cfg(test)]
 mod manage_endpoint_tests;

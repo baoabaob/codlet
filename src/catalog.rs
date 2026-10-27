@@ -77,6 +77,11 @@ pub enum CatalogError {
 }
 
 impl PluginCatalog {
+    #[cfg(test)]
+    pub(crate) fn load_core_for_test(registry: &PluginRegistry) -> Result<Self, ManifestError> {
+        Self::load_with_core(registry, Vec::new(), crate::codex::internal_plugins()?)
+    }
+
     pub fn load(registry: &PluginRegistry) -> Result<Self, ManifestError> {
         let bundled = bundled_plugins()?;
         // Synthetic renderer fixtures deliberately supply their own providers.

@@ -142,6 +142,7 @@ pub(super) fn plugin_list(
     }).collect();
     let core: Vec<_> = catalog.entries().iter().filter(|entry| catalog.is_core(&entry.id)).map(|entry| json!({
         "id": entry.id, "owner": "core", "version": env!("CARGO_PKG_VERSION"),
+        "compatibilityVersion": entry.plugin.as_ref().ok().map(|plugin| &plugin.manifest.version),
         "available": active_plugin_ids.contains(&entry.id),
         "capabilities": entry.plugin.as_ref().ok().map(|plugin| plugin.manifest.all_provides().collect::<Vec<_>>()),
         "temporaryDisableReason": catalog.startup_suspension(&entry.id),

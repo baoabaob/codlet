@@ -307,6 +307,16 @@ export interface RuntimeManageList {
   runtimeVersion: string;
   clientStatus?: ClientVersionStatus;
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
+  coreProviders?: readonly {
+    id: 'codex.desktop.adapter' | 'codex.ui.adapter'; owner: 'core';
+    /** Core distribution version; separate from historical adapter requirements. */
+    version: string;
+    /** Version of this Core-owned implementation under its historical routing ID. */
+    compatibilityVersion: string | null;
+    available: boolean;
+    capabilities: readonly ImportCapability[] | null;
+    temporaryDisableReason: string | null;
+  }[];
   deviceCompatibility?: DeviceCompatibility;
   localManagement?: { available: true; clientPermissions?: boolean; installationLifecycle?: boolean; watchEnabled: boolean; folderPicker: boolean };
   githubManagement?: { available: true };

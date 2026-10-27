@@ -9,6 +9,51 @@ fn plugins() -> Value {
 }
 
 #[test]
+fn core_provider_facts_are_authoritative_over_superseded_legacy_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = State::load(&directory.path().join("cache.json"));
+    let mut listing = json!({"plugins":[
+        {"id":"codex.desktop.adapter","version":"99.0.0","active":true},
+        {"id":"codex.ui.adapter","version":"99.0.0","active":true}],
+        "coreProviders":[
+        {"id":"codex.desktop.adapter","owner":"core","version":"1.0.0-rc.19","compatibilityVersion":"0.2.20","available":true},
+        {"id":"codex.ui.adapter","owner":"core","version":"1.0.0-rc.19","compatibilityVersion":"0.1.17","available":true}]});
+    let observe = |listing: &Value| {
+        status(
+            &state,
+            "26.1021.3705.0",
+            "windows-x86_64",
+            "1.0.0-rc.19",
+            listing,
+        )
+    };
+    assert_eq!(observe(&listing)["status"], "matched");
+    listing["coreProviders"][1]["available"] = json!(false);
+    let missing = observe(&listing)["missingRequirements"][0].clone();
+    assert_eq!(missing["currentVersion"], "0.1.17");
+    assert_eq!(missing["active"], false);
+    listing["coreProviders"][1]["available"] = json!(true);
+    listing["coreProviders"][1]["compatibilityVersion"] = json!("0.1.16");
+    assert_eq!(observe(&listing)["status"], "requirements-unmet");
+    listing["coreProviders"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("compatibilityVersion");
+    assert_eq!(
+        observe(&listing)["missingRequirements"][0]["currentVersion"],
+        Value::Null
+    );
+    listing["coreProviders"][1]["compatibilityVersion"] = json!("0.1.17");
+    listing["coreProviders"][1]["owner"] = json!("plugin");
+    assert_eq!(observe(&listing)["missingRequirements"][0]["active"], false);
+    listing["coreProviders"].as_array_mut().unwrap().pop();
+    assert_eq!(
+        observe(&listing)["missingRequirements"][0]["currentVersion"],
+        Value::Null
+    );
+}
+
+#[test]
 fn published_catalog_matches_the_bundled_snapshot_and_is_acceptable() {
     let baseline = parse_catalog(BASELINE.as_bytes()).unwrap();
     let published = parse_catalog(include_bytes!(
