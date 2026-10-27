@@ -28,7 +28,13 @@ module.exports = {
 
 分类使用顶层可选 `tags`，例如 `"tags":["UI","Enhancement"]`。推荐 `UI`、`Adapter`、`Tool`、`Enhancement`，也允许自定义。名称不做 i18n，不包含界面自动绘制的 `#`；最多 8 个不区分大小写的唯一标签，每个 1–32 个字母、数字、连字符或下划线。标签不授予权限，也不声明依赖，不要根据标签推断插件能力。旧版 Core 可能不支持该字段，以运行时提供的类型和 `plugin preview` 结果为准。
 
-发布元数据优先声明 `{"schema":1,"runtimeApi":1,"sdk":{"api":1}}`，可在 `sdk.capabilities` 中列出精确能力。标准 SDK 插件无需重复列举 OS。旧 `platforms` 和明确的特殊功能平台限制仍保留并生效。`verification` 分开记录作者提供的自动/实机测试证据；SDK 匹配不代表所有能力当前可用，也不代表未测试的平台已验收。
+执行清单写在 `codlet.json`。发布元数据另写插件根目录的可选文件 `codlet-package.json`，例如：
+
+```json
+{"schema":1,"runtimeApi":1,"sdk":{"api":1}}
+```
+
+`runtimeApi`、`sdk`、`platforms` 和 `verification` 属于 `codlet-package.json`；放入 `codlet.json` 会被未知字段校验拒绝。可在这个发布元数据文件的 `sdk.capabilities` 中列出精确能力。标准 SDK 插件无需重复列举 OS。旧 `platforms` 和明确的特殊功能平台限制仍保留并生效。`verification` 分开记录作者提供的自动/实机测试证据；SDK 匹配不代表所有能力当前可用，也不代表未测试的平台已验收。完整格式见 [插件格式](../docs/spec/plugin-format.md)。
 
 多语言使用运行时 `context.i18n` 和 manifest 的 `i18n` 元数据，按 `types/renderer.d.ts` 中的实际接口实现。日期、数字等显示也随所选语言格式化；技术标识保持稳定。用户只选单语言时不自动扩大翻译范围。
 

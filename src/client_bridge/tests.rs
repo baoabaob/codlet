@@ -126,6 +126,258 @@ fn skill_root_observation_pages_large_native_paths_and_rejects_mixed_authority()
     assert!(peer.join().unwrap() > 16);
 }
 
+// Exercise the maintained Node control server and real ChildProcess stdio. In
+// particular, do not manufacture the pid field as protocol_source() does.
+struct NodeTransportFixture {
+    source: ClientSourceRuntime,
+    peer: OwnedPluginProcess,
+    stdio: PluginStdio,
+    control_id: u64,
+    stopped: bool,
+    _directory: tempfile::TempDir,
+}
+
+impl NodeTransportFixture {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = JsRuntime::discover().unwrap();
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/client-bridge-skill-roots.cjs");
+        let (peer, stdio) = OwnedPluginProcess::spawn(
+            runtime.executable_path(),
+            &[script.to_string_lossy().into_owned(), "bundle".into()],
+            directory.path(),
+            None,
+        )
+        .unwrap();
+        let observed = Self::read_line(&stdio);
+        assert_eq!(observed["kind"], "endpoint");
+        assert_eq!(observed["pid"], peer.pid());
+        assert!(observed["childPid"].as_u64().is_some_and(|pid| pid > 0));
+        let endpoint: Endpoint = serde_json::from_value(json!({
+            "version":observed["version"],"host":observed["host"],"port":observed["port"],
+            "token":observed["token"],"pid":observed["pid"],
+            "executable":observed["executable"],"type":observed["type"]
+        }))
+        .unwrap();
+        endpoint
+            .validate(peer.pid(), runtime.executable_path())
+            .unwrap();
+        let registry = directory.path().join("registry.json");
+        let services = crate::core_services::SharedCoreServices::new(&registry).unwrap();
+        let source = ClientSourceRuntime::new(
+            endpoint,
+            runtime,
+            registry,
+            json!({}),
+            None,
+            services.prepare_traffic().unwrap(),
+            Instant::now() + WAIT,
+        )
+        .unwrap();
+        Self {
+            source,
+            peer,
+            stdio,
+            control_id: 0,
+            stopped: false,
+            _directory: directory,
+        }
+    }
+
+    fn read_line(stdio: &PluginStdio) -> Value {
+        let until = Instant::now() + WAIT;
+        let mut bytes = Vec::new();
+        loop {
+            let mut byte = [0];
+            assert_eq!(stdio.stdout.read_some(&mut byte, Some(until)).unwrap(), 1);
+            if byte[0] == b'\n' {
+                break;
+            }
+            bytes.push(byte[0]);
+        }
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn control(&mut self, mut command: Value) {
+        self.control_id += 1;
+        command["id"] = json!(self.control_id);
+        let action = command["action"].clone();
+        let mut bytes = serde_json::to_vec(&command).unwrap();
+        bytes.push(b'\n');
+        self.stdio
+            .stdin
+            .write_all(&bytes, Instant::now() + WAIT)
+            .unwrap();
+        let reply = Self::read_line(&self.stdio);
+        assert_eq!(reply["kind"], "control");
+        assert_eq!(reply["id"], self.control_id);
+        assert_eq!(reply["action"], action);
+    }
+
+    fn roots(&self, authority: Option<&str>) -> Result<Value, HostError> {
+        self.source
+            .skill_roots_snapshot("actual-rust-client", 1, &json!([]), authority)
+    }
+
+    fn close(mut self) {
+        self.control(json!({"action":"stop"}));
+        assert_eq!(self.peer.wait(WAIT).unwrap(), Some(0));
+        self.source.retire();
+        self.stopped = true;
+    }
+}
+
+impl Drop for NodeTransportFixture {
+    fn drop(&mut self) {
+        self.source.retire();
+        if !self.stopped {
+            let _ = self.peer.terminate();
+            let _ = self.peer.wait(Duration::from_secs(2));
+        }
+    }
+}
+
+#[test]
+fn actual_node_skill_facts_cross_the_authenticated_rust_boundary_without_losing_state() {
+    let mut fixture = NodeTransportFixture::new();
+    let absent = fixture.roots(None).unwrap();
+    assert_eq!(absent["status"], "unobserved");
+    assert_eq!(absent["reason"], "no_anchor");
+    assert_eq!(absent["pid"], fixture.peer.pid());
+    for fault in ["wrongIdentity", "missingIdentity"] {
+        fixture.control(json!({"action":fault,"enabled":true}));
+        assert_eq!(
+            fixture.roots(None).unwrap_err().code,
+            "client_bridge_identity_invalid"
+        );
+        fixture.control(json!({"action":fault,"enabled":false}));
+    }
+    fixture.control(json!({"action":"owner","disposed":false}));
+    let fresh = fixture.roots(None).unwrap();
+    assert_eq!(fresh["status"], "observed");
+    assert_eq!(fresh["provenance"], "fresh");
+    assert_eq!(fresh["roots"], json!([]));
+    let authority = fresh["authorityId"].as_str().unwrap().to_owned();
+    let long_root = format!("C:/{}", "Native原生😀/".repeat(20_000));
+    let expected = json!([long_root, "C:/existing Native root"]);
+    fixture.control(json!({"action":"set","requestId":"original-set","roots":expected}));
+    let pending = fixture.roots(Some(&authority)).unwrap();
+    assert_eq!(pending["status"], "unknown");
+    assert_eq!(pending["reason"], "root_write_pending");
+    assert_eq!(pending["pid"], fixture.peer.pid());
+    fixture.control(json!({"action":"reply","requestId":"original-set"}));
+    let confirmed = fixture.roots(Some(&authority)).unwrap();
+    assert_eq!(confirmed["status"], "observed");
+    assert_eq!(confirmed["provenance"], "confirmed");
+    assert_eq!(confirmed["authorityId"], authority);
+    assert_eq!(confirmed["roots"], expected);
+    assert_ne!(confirmed["revision"], fresh["revision"]);
+    for fault in ["wrongIdentity", "missingIdentity"] {
+        fixture.control(json!({"action":fault,"enabled":true}));
+        assert_eq!(
+            fixture.roots(Some(&authority)).unwrap_err().code,
+            "client_bridge_identity_invalid"
+        );
+        fixture.control(json!({"action":fault,"enabled":false}));
+    }
+    fixture.control(json!({"action":"set","requestId":"overlap-one","roots":["C:/one"]}));
+    fixture.control(json!({"action":"set","requestId":"overlap-two","roots":["C:/two"]}));
+    fixture.control(json!({"action":"reply","requestId":"overlap-one"}));
+    fixture.control(json!({"action":"reply","requestId":"overlap-two"}));
+    let unknown = fixture.roots(Some(&authority)).unwrap();
+    assert_eq!(unknown["status"], "unknown");
+    assert_eq!(unknown["reason"], "root_write_unknown");
+    assert_eq!(unknown["pid"], fixture.peer.pid());
+    fixture.control(json!({"action":"owner","disposed":true}));
+    let stale_owner = fixture.roots(Some(&authority)).unwrap();
+    assert_eq!(stale_owner["status"], "unobserved");
+    assert_eq!(stale_owner["reason"], "owner_not_current");
+    fixture.control(json!({"action":"retire"}));
+    let retired = fixture.roots(Some(&authority)).unwrap();
+    assert_eq!(retired["status"], "retired");
+    assert_eq!(retired["authorityId"], authority);
+    fixture.close();
+}
+
+#[test]
+fn actual_node_official_update_receipts_keep_server_identity_and_one_controlled_install() {
+    let mut fixture = NodeTransportFixture::new();
+    let target = fixture.source.official_update_target().unwrap();
+    assert_eq!(
+        target["target"],
+        json!({"id":"c".repeat(64),"version":"0.0.0"})
+    );
+    assert!(target["reason"].is_null());
+    assert!(target["installation"].is_null());
+    assert_eq!(target["fixtureCalls"], 0);
+    assert_eq!(target["pid"], fixture.peer.pid());
+    assert_eq!(target["executable"], fixture.source.0.endpoint.executable);
+    assert_eq!(target["type"], "browser");
+    for fault in ["wrongIdentity", "missingIdentity"] {
+        fixture.control(json!({"action":fault,"enabled":true}));
+        assert_eq!(
+            fixture.source.official_update_target().unwrap_err().code,
+            "client_bridge_identity_invalid"
+        );
+        fixture.control(json!({"action":fault,"enabled":false}));
+    }
+    let operation = "controlled-original-install";
+    let unknown = fixture
+        .source
+        .request(json!({"op":"status","operationId":operation}))
+        .unwrap();
+    assert_eq!(unknown["unknown"], true);
+    assert_eq!(unknown["pending"], false);
+    let source = fixture.source.clone();
+    let installing =
+        std::thread::spawn(move || source.install_official_update(operation, &"c".repeat(64)));
+    let until = Instant::now() + WAIT;
+    loop {
+        let receipt = fixture
+            .source
+            .request(json!({"op":"status","operationId":operation}))
+            .unwrap();
+        if receipt["pending"] == true {
+            break;
+        }
+        assert_eq!(receipt["unknown"], true);
+        assert!(
+            Instant::now() < until,
+            "the controlled install did not enter its original operation"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let duplicate = fixture
+        .source
+        .request(
+            json!({"op":"officialUpdateInstall","operationId":operation,"targetId":"c".repeat(64)}),
+        )
+        .unwrap();
+    assert_eq!(duplicate["pending"], true);
+    assert_eq!(duplicate["pid"], fixture.peer.pid());
+    assert_eq!(
+        fixture.source.official_update_target().unwrap()["fixtureCalls"],
+        1
+    );
+    fixture.control(json!({"action":"finishUpdate"}));
+    let installed = installing.join().unwrap().unwrap();
+    assert_eq!(installed["accepted"], true);
+    assert_eq!(installed["target"], target["target"]);
+    assert_eq!(installed["pid"], fixture.peer.pid());
+    let repeated = fixture
+        .source
+        .install_official_update(operation, &"c".repeat(64))
+        .unwrap();
+    assert_eq!(repeated["accepted"], true);
+    assert_eq!(repeated["target"], target["target"]);
+    assert_eq!(
+        fixture.source.official_update_target().unwrap()["fixtureCalls"],
+        1
+    );
+    fixture.close();
+}
+
 #[test]
 fn malformed_startup_contract_is_terminal_and_never_replays_ready() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

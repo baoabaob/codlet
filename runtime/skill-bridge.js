@@ -89,7 +89,11 @@ function installCodletSkill(config) {
       const scope={clientId:state.clientId,clientEpoch:state.clientEpoch,authorityId:state.authorityId};
       const lease=await ask(roots?'set':'ensure',roots?{roots}:{});
       if(scope.clientEpoch!==state.clientEpoch||scope.authorityId!==state.authorityId)throw stopped();
-      if(lease.ready)return;
+      if(lease.ready){
+        if(!state.alive)throw stopped();
+        if(state.uncertain)throw unknown();
+        state.status='ready';state.error=null;return;
+      }
       if(lease.busy){if(nativeCaller)throw Error('A Native skill root write is already pending');await delay(50);continue;}
       let result;
       try {

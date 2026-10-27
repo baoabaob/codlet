@@ -55,6 +55,30 @@ test('unlisted frontend and backend reuse the mounted local connection and prese
   client.setAppServerVersion('another-version');await settle();await client.sendRequest('skills/list',{});assert.equal(f.state().clientEpoch,1);
   await settle();await f.state().dispose(['/another-root']);assert.equal(client.sendRequest,f.original);assert.deepEqual([...calls.at(-1).params.extraRoots],['/another-root']);
 });
+test('an already registered authority returns to ready after the same client version changes without another roots write',async t=>{
+  const f=fixture(t);await f.state().ready;
+  assert.equal(f.state().status,'ready');assert.equal(f.calls.filter(call=>call.method==='skills/extraRoots/set').length,1);
+  f.client.setAppServerVersion('changed-version');assert.equal(f.state().status,'waiting');
+  const params={cwds:['/current']},options={timeoutMs:60000};
+  await f.client.sendRequest('skills/list',params,options);await settle();
+  assert.equal(f.state().clientEpoch,1);assert.equal(f.state().authorityId,'native-authority');
+  assert.equal(f.state().status,'ready');assert.equal(f.state().error,null);
+  assert.equal(f.calls.filter(call=>call.method==='skills/extraRoots/set').length,1);
+  const native=f.calls.find(call=>call.method==='skills/list');assert.equal(native.params,params);assert.equal(native.options,options);
+});
+for(const end of ['retired','unknown','epoch-changed'])test(`a confirmed ready reply cannot revive a ${end} skill owner`,async t=>{
+  const f=fixture(t);await f.state().ready;
+  const state=f.state(),binding=f.context.skillBinding;let pending;
+  f.context.skillBinding=text=>{const input=JSON.parse(text);if(input.action==='ensure')pending=input;else binding(text);};
+  f.client.setAppServerVersion('changed-version');await f.client.sendRequest('skills/list',{});await settle();assert.ok(pending);
+  if(end==='retired')await state.dispose();
+  else if(end==='unknown'){state.uncertain=true;state.status='unknown';state.error='unconfirmed Native write';}
+  else f.client.setAppServerVersion('newer-version');
+  state.receive(pending.id,{ready:true});await settle();
+  assert.notEqual(state.status,'ready');assert.equal(f.calls.filter(call=>call.method==='skills/extraRoots/set').length,1);
+  if(end==='retired'){assert.equal(state.alive,false);assert.equal(f.state(),undefined);assert.equal(f.client.sendRequest,f.original);}
+  if(end==='unknown'){assert.equal(state.status,'unknown');assert.equal(state.uncertain,true);}
+});
 test('cold documents wait for mounted services; disposal cancels the pending wait',async t=>{
   const f=fixture(t,{mounted:false});await settle();assert.equal(f.state().status,'starting');assert.equal(f.calls.length,0);
   f.mount();await new Promise(r=>setTimeout(r,130));await settle();assert.equal(f.state().status,'ready');

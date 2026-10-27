@@ -433,7 +433,9 @@ function startClientBridge(electron, configuration, dependencies = {}) {
         lease=socket;socket.setTimeout(0);socket.write(JSON.stringify({ok:true,result:{leased:true,...status()}})+'\n');
         socket.once('close',()=>{if(lease===socket){lease=null;bridge.close().catch(()=>{});}});return;
       }
-      command(input).then(result => socket.end(JSON.stringify({ ok: true, result }) + '\n'), error => {
+      // Domain results and retained receipts share the authenticated server's
+      // identity, including reads that do not pass through status().
+      command(input).then(result => socket.end(JSON.stringify({ ok: true, result: {...result, ...identity()} }) + '\n'), error => {
         const code = codeOf(error);
         socket.end(JSON.stringify({ ok: false, code }) + '\n');
       });
