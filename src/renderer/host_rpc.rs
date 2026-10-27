@@ -501,6 +501,11 @@ impl RendererRuntime {
         request: &BindingMessage,
         scope: &mut ScopedCall,
     ) -> Result<(), HostError> {
+        // A renderer Promise continuation may arrive after its delivery ACK was
+        // routed by the CDP reader but before the outer event pump polls calls.
+        // Reap those receipts before counting admission; an unacknowledged
+        // delivery keeps its original owner and absolute deadline.
+        self.reap_host_deliveries();
         if self.host_rpc.pending.len() >= MAX_PENDING
             || self
                 .host_rpc
@@ -515,7 +520,11 @@ impl RendererRuntime {
         {
             return Err(HostError::new(
                 "request_limit",
-                "Too many pending Host calls for this renderer binding or runtime.",
+                format!(
+                    "Too many pending Host calls for this renderer binding or runtime. binding[{}]; runtime[{}]",
+                    self.host_phase_counts(Some((target_id, &consumer.binding_name))),
+                    self.host_phase_counts(None),
+                ),
             ));
         }
         let client = self.host_rpc.client.as_ref().ok_or_else(|| {
@@ -605,6 +614,42 @@ impl RendererRuntime {
             scope,
         });
         Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    fn reap_host_deliveries(&mut self) {
+        let calls = std::mem::take(&mut self.host_rpc.pending);
+        for call in calls {
+            let retained = if matches!(call.phase, Some(Phase::Delivering { .. })) {
+                self.advance_host_call(call)
+            } else {
+                Some(call)
+            };
+            if let Some(call) = retained {
+                self.host_rpc.pending.push(call);
+            }
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    fn host_phase_counts(&self, binding: Option<(&str, &str)>) -> String {
+        let mut invoking = 0;
+        let mut core = 0;
+        let mut delivering = 0;
+        for call in &self.host_rpc.pending {
+            if binding.is_some_and(|(target, binding)| {
+                call.target_id != target || call.consumer.binding_name != binding
+            }) {
+                continue;
+            }
+            match call.phase {
+                Some(Phase::Invoking(_)) => invoking += 1,
+                Some(Phase::Core(_)) => core += 1,
+                Some(Phase::Delivering { .. }) => delivering += 1,
+                None => unreachable!("a retained Host call has one phase"),
+            }
+        }
+        format!("invoking={invoking},core={core},delivering={delivering}")
     }
 
     pub(super) fn poll_host_capabilities(&mut self) {
@@ -839,3 +884,6 @@ impl RendererRuntime {
         });
     }
 }
+
+#[cfg(all(test, windows))]
+mod tests;
