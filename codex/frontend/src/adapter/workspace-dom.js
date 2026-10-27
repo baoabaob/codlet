@@ -33,6 +33,27 @@ function one(nodes, role, optional = false) {
   if (candidates.length !== 1) throw workspaceError(candidates.length ? 'workspace_host_drift' : 'workspace_host_pending', `A unique native ${role} is required (found ${candidates.length})`);
   return candidates[0];
 }
+function plainThreadContent(document, main, composer, scroller, footer) {
+  if (!composer || !scroller || !footer || !scroller.contains(footer)) return null;
+  const region = scroller.closest('[data-app-shell-focus-area="main"]');
+  const layout = region?.closest('[data-app-shell-main-content-layout]');
+  if (!region || !layout || !active(region) || !active(layout) || !main.contains(layout) || !layout.contains(region)) return null;
+  const root = document.getElementById('root'), inputChain = currentElementAncestry(composer, root), scrollChain = currentElementAncestry(scroller, root);
+  if (!inputChain || !scrollChain) throw workspaceError('workspace_host_drift', 'The plain thread input and scroller have no current Native owner');
+  const shared = new Set(scrollChain), roleIndices = [region, layout, main].map(node => {
+    const owners = inputChain.filter(fiber => fiber.stateNode === node && shared.has(fiber));
+    if (owners.length !== 1) throw workspaceError('workspace_host_drift', 'The plain thread content boundary is not owned by the current Native tree');
+    return inputChain.indexOf(owners[0]);
+  });
+  const frames = inputChain.filter(fiber => {
+    const props = fiber.memoizedProps, text = componentSource(fiber.type);
+    return shared.has(fiber) && typeof props?.conversationId === 'string' && props.conversationId.length > 0 && props.hostId === 'local' &&
+      text.includes('floatingContent') && text.includes('contentX') && text.includes('LocalConversationPage');
+  });
+  if (frames.length !== 1 || inputChain.indexOf(frames[0]) >= roleIndices[0] || roleIndices.some((index, position) => position > 0 && index < roleIndices[position - 1]))
+    throw workspaceError('workspace_host_drift', 'The plain thread content and input do not share a unique Native conversation frame');
+  return region;
+}
 export function findWorkspaceSurface(document, confirmedComposer = null) {
   if (confirmedComposer && (confirmedComposer.ownerDocument !== document || !active(confirmedComposer) ||
       !confirmedComposer.matches('[data-codex-composer-root]') || !document.getElementById('root')?.contains(confirmedComposer)))
@@ -48,9 +69,12 @@ export function findWorkspaceSurface(document, confirmedComposer = null) {
   // Its composer root includes the input and utility controls. Keep that exact
   // region as its footer; do not manufacture a thread footer or move the input.
   const home = !!composer?.matches('[data-composer-placement="home"]') && !scroller;
-  const content = scroller?.closest('[data-includes-composer]') ?? (home ? composer.closest('[data-app-shell-main-content-layout]') ?? main :
-    !composer ? one(main.querySelectorAll('[data-app-shell-main-content-layout]'), 'main content layout', true) ?? main : null);
   const footer = home ? composer : composer?.closest('[data-thread-scroll-footer]') ?? null;
+  // Native's ordinary local-thread branch has no unified-timeline wrapper.
+  // Its current conversation frame owns the input and scroller inside the
+  // main focus region; retain that exact boundary instead of borrowing <main>.
+  const content = scroller?.closest('[data-includes-composer]') ?? (home ? composer.closest('[data-app-shell-main-content-layout]') ?? main :
+    composer ? plainThreadContent(document, main, composer, scroller, footer) : one(main.querySelectorAll('[data-app-shell-main-content-layout]'), 'main content layout', true) ?? main);
   if (composer && (!content || !content.contains(composer) || !footer || !home && (!scroller || !scroller.contains(footer))))
     throw workspaceError('workspace_host_drift', 'The thread body and composer footer no longer match the workspace contract');
   const header = one(document.querySelectorAll('[data-app-shell-main-titlebar]'), 'main titlebar', true);

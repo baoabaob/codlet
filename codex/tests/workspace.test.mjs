@@ -134,6 +134,47 @@ test('a malformed thread composer cannot borrow the home fallback or an unrelate
   assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,main.querySelector('[data-codex-composer-root]')),{code:'workspace_host_drift'});
 });
 
+function plainThreadFixture(t){
+  const f=fixture(t),main=f.document.querySelector('main');
+  // Current build21828 ordinary-thread branch: no data-includes-composer.
+  main.innerHTML='<div data-app-shell-main-content-layout="thread-edge-scroll"><div data-app-shell-focus-area="main"><div id="native-thread-frame"><div class="thread-scroll-container"><section id="body">actual history</section><div data-thread-scroll-footer="true"><div data-codex-composer-root data-composer-placement="thread"><div contenteditable="true">unsent draft</div></div></div></div></div></div></div>';
+  const layout=main.firstElementChild,region=layout.firstElementChild,container=region.firstElementChild,scroller=container.firstElementChild,footer=scroller.lastElementChild,composer=footer.firstElementChild;
+  const mainFiber=f.attach(main,{type:'main'}),layoutFiber=f.attach(layout,{type:'div'},mainFiber),regionFiber=f.attach(region,{type:'div'},layoutFiber);
+  const frame={type:function NativeConversationFrame({floatingContent,contentX}){return 'LocalConversationPage';},memoizedProps:{conversationId:'thread-a',hostId:'local'},return:regionFiber};regionFiber.child=frame;
+  const containerFiber=f.attach(container,{type:'div'},frame),scrollFiber=f.attach(scroller,{type:'div'},containerFiber),footerFiber=f.attach(footer,{type:'div'},scrollFiber);f.attach(composer,{type:'div'},footerFiber);
+  return{...f,main,layout,region,scroller,footer,composer,frame,regionFiber};
+}
+test('ordinary Native thread exposes its committed main focus content without a unified-timeline wrapper',async t=>{
+  const f=plainThreadFixture(t),actual=f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer);
+  assert.equal(actual.content,f.region);assert.equal(actual.scroller,f.scroller);assert.equal(actual.footer,f.footer);assert.equal(actual.composer,f.composer);
+  const session=f.connect().session;await f.flush();assert.equal(session.getSnapshot().available,true);assert.equal(session.getSurface().content.element,f.region);
+  const lease=session.acquireSurface({hideBody:true});assert.equal(f.document.getElementById('body').style.visibility,'hidden');assert.equal(f.footer.style.visibility,'');assert.equal(f.composer.textContent,'unsent draft');lease.dispose();assert.equal(f.document.getElementById('body').style.visibility,'');
+});
+test('another workspace main and focus region cannot change the confirmed ordinary thread owner',t=>{
+  const f=plainThreadFixture(t),other=f.document.createElement('main');other.dataset.appShellMainSurface='other';other.innerHTML='<div data-app-shell-main-content-layout><div data-app-shell-focus-area="main"></div></div>';f.document.getElementById('root').append(other);
+  assert.equal(f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer).content,f.region);
+});
+test('an ordinary thread rejects a retired React owner instead of accepting its retained DOM',t=>{
+  const f=plainThreadFixture(t);f.current.child=null;
+  assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer),{code:'workspace_host_drift'});
+});
+test('an ownerless focus wrapper cannot replace the actual Native content boundary',t=>{
+  const f=plainThreadFixture(t),wrapper=f.document.createElement('div');wrapper.dataset.appShellFocusArea='main';f.scroller.before(wrapper);wrapper.append(f.scroller);
+  assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer),{code:'workspace_host_drift'});
+});
+test('ordinary thread rejects conflicting frame identity and a footer outside its scroller',t=>{
+  const f=plainThreadFixture(t);f.frame.memoizedProps.hostId='remote';
+  assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer),{code:'workspace_host_drift'});
+  f.frame.memoizedProps.hostId='local';f.region.append(f.footer);
+  assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer),{code:'workspace_host_drift'});
+});
+test('ordinary thread rejects an unproven frame and two current Native frame owners',t=>{
+  const f=plainThreadFixture(t),type=f.frame.type;f.frame.type=function Unrelated(){return null;};
+  assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer),{code:'workspace_host_drift'});
+  f.frame.type=type;const outer={type,memoizedProps:f.frame.memoizedProps,child:f.frame,return:f.regionFiber};f.regionFiber.child=outer;f.frame.return=outer;
+  assert.throws(()=>f.window.WorkspaceDom.findWorkspaceSurface(f.document,f.composer),{code:'workspace_host_drift'});
+});
+
 test('body viewport follows Native motion and floating edge regions without a fixed summary width',t=>{
   const f=fixture(t),scroller=f.document.querySelector('.thread-scroll-container'),floating=f.document.createElement('div');f.document.querySelector('main').append(floating);
   const bounds={x:100,y:50,left:100,right:1300,top:50,bottom:950,width:1200,height:900};scroller.getBoundingClientRect=()=>bounds;

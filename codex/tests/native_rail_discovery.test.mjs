@@ -73,3 +73,83 @@ test('a detached rail ancestry cannot supply stale Native components', async t =
   f.current.child = null;
   await assert.rejects(f.discover(), { code: 'ui_host_drift' });
 });
+
+function ClassicItem({ animatedIcon, label, icon, isActive, onClick }) {
+  return { className: 'sidebar-item', animatedIcon, label, icon, isActive, onClick };
+}
+function classicFixture(t) {
+  const React = { version: 'x', useState() {}, createElement: (type, props) => ({ type, props }) };
+  const DOM = { version: 'x', flushSync() {} }, Client = { createRoot() {} };
+  const shared = { r: () => React, d: () => DOM, c: () => Client };
+  const primary = { ClassicItem, SidebarGroup }, initial = {}, buttons = [];
+  const current = {}, group = { type: SidebarGroup, memoizedProps: {}, return: current };
+  const parent = { nodeType: 1, contains: button => buttons.includes(button) };
+  const groupDOM = { type: 'div', stateNode: parent, return: group };
+  const wrapper = { type() {}, return: groupDOM };
+  group.child = groupDOM; groupDOM.child = wrapper; current.child = group;
+  const nav = {}, root = { __reactContainer$test: { stateNode: { current } } };
+  const add = (type = ClassicItem) => {
+    const item = { type, memoizedProps: { animatedIcon: 'sidebar-new-chat', label: 'New chat', icon() {}, isActive: false, onClick() {} }, return: wrapper };
+    const button = { closest: selector => selector === 'nav' ? nav : null };
+    const leaf = { type: 'button', stateNode: button, return: item };
+    button.__reactFiber$test = leaf; item.child = leaf;
+    if (wrapper.child) wrapper.child.sibling = item; else wrapper.child = item;
+    buttons.push(button); return { button, item, leaf };
+  };
+  const row = add(), previous = { document: globalThis.document, location: globalThis.location };
+  globalThis.location = { origin: 'app://-', pathname: '/index.html' };
+  globalThis.document = { getElementById: () => root, querySelectorAll: selector => selector === 'nav button.sidebar-item' ? buttons : selector.startsWith('nav[') ? [] : [
+    { href: 'app://-/assets/app-shared-new.js' }, { href: 'app://-/assets/app-initial-new.js' },
+  ] };
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } });
+  return { shared, primary, current, group, parent, buttons, row, add,
+    discover: () => discoverNative({ load: async url => url.includes('app-shared-') ? shared : url.includes('app-primary-') ? primary : initial, read: async url => url.includes('app-shared-') ? factorySource : 'import("./app-primary-new.js")' }) };
+}
+
+test('an unlisted build discovers its mounted classic rows and lexical group without a rail', async t => {
+  const f = classicFixture(t), native = await f.discover();
+  assert.equal(native.SidebarItem, ClassicItem); assert.equal(native.SidebarGroup, SidebarGroup);
+  assert.equal(native.RailButton, undefined); assert.equal(native.RailTooltip, undefined);
+});
+test('classic discovery follows a proven current alternate, never detached row ancestry', async t => {
+  const f = classicFixture(t), {button, leaf} = f.row;
+  button.__reactFiber$test = { stateNode: button, return: null, alternate: leaf };
+  assert.equal((await f.discover()).SidebarItem, ClassicItem);
+  f.current.child = null;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+});
+test('classic discovery requires the mounted row export and its actual containing group', async t => {
+  const f = classicFixture(t);
+  delete f.primary.ClassicItem;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+  f.primary.ClassicItem = ClassicItem; delete f.primary.SidebarGroup;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+  f.primary.SidebarGroup = SidebarGroup; f.parent.contains = () => false;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+});
+test('different mounted classic row owners are a contract error instead of pending startup', async t => {
+  const f = classicFixture(t);
+  function OtherItem({ animatedIcon, isActive }) { return { className: 'sidebar-item', animatedIcon, isActive }; }
+  f.primary.OtherItem = OtherItem; f.add(OtherItem);
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+});
+test('an unrelated navigation with the same CSS class cannot make the proven Native owner ambiguous', async t => {
+  const f = classicFixture(t), unrelated = {};
+  f.buttons.push({closest: selector => selector === 'nav' ? unrelated : null});
+  assert.equal((await f.discover()).SidebarItem, ClassicItem);
+});
+test('navigation can remain pending only while neither semantic navigation owner is mounted', async t => {
+  const f = classicFixture(t); f.buttons.length = 0;
+  await assert.rejects(f.discover(), { code: 'ui_host_pending' });
+});
+test('mounted classic rows with contradictory roles or multiple navigation landmarks fail explicitly', async t => {
+  const f = classicFixture(t);
+  f.group.memoizedProps.itemSpacing = 'rail';
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+  delete f.group.memoizedProps.itemSpacing;
+  f.row.item.memoizedProps.animatedIcon = 'unknown-navigation-contract';
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+  f.row.item.memoizedProps.animatedIcon = 'sidebar-new-chat';
+  const other = f.add(); other.button.closest = selector => selector === 'nav' ? {} : null;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+});

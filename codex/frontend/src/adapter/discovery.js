@@ -58,6 +58,37 @@ function railComponents(modules) {
     SidebarGroup: one((props, source) => props.itemSpacing === 'rail' && source.includes('group/nav-list'), 'sidebar group'),
   };
 }
+function classicComponents(modules) {
+  const buttons = [...document.querySelectorAll('nav button.sidebar-item')].filter(button => !button.closest('[data-codlet-native-navigation]'));
+  if (!buttons.length) throw fail('ui_host_pending', 'Waiting for native navigation');
+  const exports = new Set(modules.flatMap(module => Object.values(module)));
+  const roles = new Set(['sidebar-new-chat', 'sidebar-tasks', 'sidebar-plugins', 'sidebar-library']);
+  const items = new Set(), groups = new Set(), navigations = new Set();
+  for (const button of buttons) {
+    const chain = currentElementAncestry(button);
+    if (!chain) continue;
+    const matches = chain.filter(fiber => component(fiber.type) && exports.has(fiber.type) &&
+      roles.has(fiber.memoizedProps?.animatedIcon) && fiber.memoizedProps.label != null && fiber.memoizedProps.icon != null &&
+      typeof fiber.memoizedProps.onClick === 'function' && ['sidebar-item', 'animatedIcon', 'isActive'].every(marker => componentSource(fiber.type).includes(marker)));
+    if (matches.length > 1) throw fail('ui_host_drift', 'Native classic navigation row ownership is ambiguous');
+    if (!matches.length) continue;
+    const item = matches[0];
+    // Follow this fixed row's lexical group, outside any drag/drop wrapper.
+    // Other task rows and message descendants do not identify navigation.
+    const group = chain.slice(chain.indexOf(item) + 1).find(fiber => component(fiber.type) && exports.has(fiber.type) && componentSource(fiber.type).includes('group/nav-list'));
+    const parent = group?.child?.stateNode;
+    if (!group || group.memoizedProps?.itemSpacing === 'rail' || parent?.nodeType !== 1 || !parent.contains(button))
+      throw fail('ui_host_drift', 'The mounted native classic navigation group changed');
+    items.add(item.type); groups.add(group.type); navigations.add(button.closest('nav'));
+  }
+  if (navigations.size > 1) throw fail('ui_host_drift', 'Native classic navigation ownership is ambiguous');
+  if (items.size !== 1 || groups.size !== 1) throw fail('ui_host_drift', 'A unique mounted native classic navigation contract is required');
+  return { SidebarItem: [...items][0], SidebarGroup: [...groups][0] };
+}
+function navigationComponents(modules) {
+  if (document.querySelectorAll('nav[data-app-navigation-rail="true"]').length) return railComponents(modules);
+  return classicComponents(modules);
+}
 export function newTaskHook(initial) {
   const values = [...new Set(Object.values(initial))];
   const actions = values.filter(fn => {
@@ -84,7 +115,7 @@ export async function discoverNative({ load = url => import(url), read = async u
   if (primaryUrls.length > 1) throw fail('ui_host_drift', 'The native primary module is ambiguous');
   const modules = [shared, initial, ...await Promise.all(primaryUrls.map(load))];
   // Require mounted native components before calling even the React factories.
-  const rail = railComponents(modules);
+  const navigation = navigationComponents(modules);
   const names = reactFactories(sharedSource);
   for (const name of Object.values(names)) if (typeof shared[name] !== 'function') throw fail('ui_react_drift', 'Native React factory export changed');
   const React = shared[names.react](), DOM = shared[names.dom](), Client = shared[names.client]();
@@ -93,7 +124,7 @@ export async function discoverNative({ load = url => import(url), read = async u
     throw fail('ui_react_drift', 'Native React and DOM contracts do not match');
   const appExports = modules.slice(1).flatMap(module => Object.values(module));
   const header = uniqueExport(appExports, value => value && component(value.Header) && component(value.HeaderToolbar) && component(value.Root), 'page header', true);
-  return { React, DOM, Client, ...rail, NotificationBadge: notificationBadge(appExports), RailTooltip: adaptRailTooltip(React, rail.RailTooltip), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
+  return { React, DOM, Client, ...navigation, NotificationBadge: notificationBadge(appExports), ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
     nativeDownloadGlyph:nativeDownloadGlyph(Object.values(shared)),
     composerActionProfile: COMPOSER_PROFILE, toolbarInset: 'page', newTaskOptions: { codexAppMode: 'codex' },
     useStartNewConversation: newTaskHook(appExports), compatibility: 'structural' };
