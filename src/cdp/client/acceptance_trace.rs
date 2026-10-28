@@ -52,7 +52,7 @@ fn metadata(
             session
                 .or(owned_session)
                 .and_then(|s| state.and_then(|state| state.sessions.get(s)))
-                .map(|(target, _)| target.as_str())
+                .map(|session| session.target_id.as_str())
         });
     json!({"id":id,"method":method,"sessionId":session,"targetId":target,"ownedSessionId":owned_session})
 }

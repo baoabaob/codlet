@@ -70,3 +70,11 @@ test('fuse scans use the public byte-length header across chunk boundaries and s
     else assert.equal(result.moduleData.patches[0].fileOffset,offset+sentinel.length+5);
   }
 });
+
+test('Windows build 22391 accepts its reviewed image without accepting a neighboring offset or another wire',()=>{
+  const image='616ec415a02e75b8abed4c38a34cf746ed1c2f1ba0adc77c500b815b8cc0dcc4',current={...fuse,offset:287200672};
+  assert.deepEqual(planForImage(image,[current]),{moduleData:{module:'chrome.dll',sha256:image,patches:[{fileOffset:287200709,expected:[48],replacement:[49]}]}});
+  assert.throws(()=>planForImage(image,[{...current,offset:current.offset+1}]),{code:'client_bootstrap_version_unsupported'});
+  assert.throws(()=>planForImage(image,[{...current,wire:'000011001'}]),{code:'client_bootstrap_version_unsupported'});
+  assert.throws(()=>planForImage('0'.repeat(64),[current]),{code:'client_bootstrap_version_unsupported'});
+});

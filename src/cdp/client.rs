@@ -32,6 +32,7 @@ mod raw_access;
 mod session_retirement;
 pub use raw_access::{BoundedCdpEvents, CdpEventFilter, QueuedCdpRequest};
 use raw_access::{BoundedEventSink, RawWritePermit};
+pub(crate) use session_retirement::SessionRetirement;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteError {
@@ -187,10 +188,16 @@ struct State {
     bounded_events: Vec<BoundedEventSink>,
     next_event_registration_id: u64,
     activity_epoch: u64,
-    sessions: HashMap<String, (String, Weak<AtomicBool>)>,
+    sessions: HashMap<String, TrackedSession>,
     retiring_sessions: HashMap<String, session_retirement::RetiringSession>,
     retirement_requests: HashMap<u64, String>,
     default_contexts: contexts::DefaultContexts,
+}
+
+struct TrackedSession {
+    target_id: String,
+    live: Weak<AtomicBool>,
+    retirement: SessionRetirement,
 }
 
 struct Shared {
@@ -702,7 +709,7 @@ impl CdpClient {
                 && state
                     .sessions
                     .get(session_id)
-                    .and_then(|(_, live)| live.upgrade())
+                    .and_then(|session| session.live.upgrade())
                     .is_some_and(|live| !live.load(Ordering::Acquire))
             {
                 return Err(ClientError::SessionEnded(session_id.to_owned()));
@@ -836,7 +843,7 @@ impl CdpClient {
             .expect("CDP state poisoned");
         state
             .sessions
-            .retain(|_, (_, live)| live.strong_count() > 0);
+            .retain(|_, session| session.live.strong_count() > 0);
         let retained: Vec<_> = state.sessions.keys().cloned().collect();
         state
             .default_contexts
@@ -844,7 +851,11 @@ impl CdpClient {
         state.default_contexts.forget(session_id);
         state.sessions.insert(
             session_id.to_owned(),
-            (target_id.to_owned(), Arc::downgrade(&live)),
+            TrackedSession {
+                target_id: target_id.to_owned(),
+                live: Arc::downgrade(&live),
+                retirement: SessionRetirement::new(),
+            },
         );
         live
     }
@@ -861,7 +872,7 @@ impl CdpClient {
             || !state
                 .sessions
                 .get(session_id)
-                .and_then(|(_, live)| live.upgrade())
+                .and_then(|session| session.live.upgrade())
                 .is_some_and(|live| live.load(Ordering::Acquire))
         {
             return None;
@@ -1308,7 +1319,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
     let ended: Vec<_> = state
         .sessions
         .iter()
-        .filter_map(|(session_id, (target_id, live))| {
+        .filter_map(|(session_id, session)| {
             let matches = event.session_id.is_none()
                 && match event.method.as_str() {
                     "Target.targetDestroyed" => {
@@ -1317,7 +1328,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
                             .as_ref()
                             .and_then(|p| p.get("targetId"))
                             .and_then(Value::as_str)
-                            == Some(target_id)
+                            == Some(&session.target_id)
                     }
                     "Target.detachedFromTarget" => {
                         event
@@ -1330,7 +1341,8 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
                     _ => false,
                 };
             if matches {
-                if let Some(live) = live.upgrade() {
+                session.retirement.confirm_teardown();
+                if let Some(live) = session.live.upgrade() {
                     live.store(false, Ordering::Release);
                 }
                 Some(session_id.clone())
@@ -1347,7 +1359,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
         state
             .sessions
             .get(id)
-            .and_then(|(_, live)| live.upgrade())
+            .and_then(|session| session.live.upgrade())
             .is_some_and(|live| live.load(Ordering::Acquire))
     }) {
         state.default_contexts.observe(&event);
@@ -1419,8 +1431,8 @@ fn route_response(
         });
     if session_gone {
         let session = pending.expected_session.as_ref().unwrap().clone();
-        if let Some((_, live)) = state.sessions.get(&session)
-            && let Some(live) = live.upgrade()
+        if let Some(session) = state.sessions.get(&session)
+            && let Some(live) = session.live.upgrade()
         {
             live.store(false, Ordering::Release);
         }
@@ -1839,7 +1851,11 @@ mod tests {
         let live = Arc::new(AtomicBool::new(true));
         shared.state.lock().unwrap().sessions.insert(
             "session-a".into(),
-            ("target-a".into(), Arc::downgrade(&live)),
+            TrackedSession {
+                target_id: "target-a".into(),
+                live: Arc::downgrade(&live),
+                retirement: SessionRetirement::new(),
+            },
         );
         route_message(
             &shared,

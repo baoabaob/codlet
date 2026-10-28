@@ -130,6 +130,7 @@ fn skill_root_observation_pages_large_native_paths_and_rejects_mixed_authority()
 // particular, do not manufacture the pid field as protocol_source() does.
 struct NodeTransportFixture {
     source: ClientSourceRuntime,
+    startup_provider: Option<LoadedPlugin>,
     peer: OwnedPluginProcess,
     stdio: PluginStdio,
     control_id: u64,
@@ -139,13 +140,25 @@ struct NodeTransportFixture {
 
 impl NodeTransportFixture {
     fn new() -> Self {
+        Self::with_ready_mode(false)
+    }
+
+    fn with_ready_mode(reject_ready: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let runtime = JsRuntime::discover().unwrap();
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/client-bridge-skill-roots.cjs");
         let (peer, stdio) = OwnedPluginProcess::spawn(
             runtime.executable_path(),
-            &[script.to_string_lossy().into_owned(), "bundle".into()],
+            &[
+                script.to_string_lossy().into_owned(),
+                "bundle".into(),
+                if reject_ready {
+                    "ready-reject".into()
+                } else {
+                    "normal".into()
+                },
+            ],
             directory.path(),
             None,
         )
@@ -164,19 +177,36 @@ impl NodeTransportFixture {
             .validate(peer.pid(), runtime.executable_path())
             .unwrap();
         let registry = directory.path().join("registry.json");
+        let startup_provider = reject_ready.then(|| {
+            let root = directory.path().join("adapter");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":"dev.transport.fixture","version":"1","host":{"entry":"host.cjs"},"permissions":["host.process","cdp.raw"],"provides":[{"name":"codlet.client.launch","api":1,"scope":"runtime"}]}).to_string()).unwrap();
+            std::fs::write(root.join("host.cjs"), "module.exports={clientSource(){return {code:'controlled'};}};").unwrap();
+            let registration = LocalPluginRegistration { path: root.canonicalize().unwrap(), grants:vec![Permission::HostProcess, Permission::CdpRaw], ..Default::default() };
+            let mut registry_data = PluginRegistry::load(&registry).unwrap();
+            registry_data.register_local("dev.transport.fixture", registration.clone()).unwrap();
+            registry_data.set_enabled("dev.transport.fixture", true).unwrap();
+            registry_data.save().unwrap();
+            crate::local_plugins::load_local_plugin_with_registration("dev.transport.fixture", &registration, 1).unwrap()
+        });
         let services = crate::core_services::SharedCoreServices::new(&registry).unwrap();
         let source = ClientSourceRuntime::new(
             endpoint,
             runtime,
             registry,
-            json!({}),
-            None,
+            if reject_ready {
+                json!({"source":{"operations":["http.intercept"],"protocols":["http"]}})
+            } else {
+                json!({})
+            },
+            startup_provider.clone(),
             services.prepare_traffic().unwrap(),
             Instant::now() + WAIT,
         )
         .unwrap();
         Self {
             source,
+            startup_provider,
             peer,
             stdio,
             control_id: 0,
@@ -225,6 +255,106 @@ impl NodeTransportFixture {
         assert_eq!(self.peer.wait(WAIT).unwrap(), Some(0));
         self.source.retire();
         self.stopped = true;
+    }
+}
+
+#[test]
+fn actual_node_ready_rejection_is_a_valid_terminal_source_failure() {
+    let fixture = NodeTransportFixture::with_ready_mode(true);
+    assert_eq!(
+        fixture
+            .source
+            .complete_startup(fixture.startup_provider.as_ref())
+            .unwrap(),
+        StartupObservation::Ready(false)
+    );
+    assert_eq!(
+        fixture.source.cached_startup_observation(),
+        StartupObservation::Ready(false)
+    );
+    let receipt = fixture
+        .source
+        .request(json!({"op":"status","operationId":STARTUP_OPERATION}))
+        .unwrap();
+    assert_eq!(receipt["outcome"], "applied");
+    assert_eq!(receipt["sourceError"], "backend_route_timeout");
+    assert_eq!(
+        receipt["activation"],
+        json!({"installed":false,"pending":false,"pendingSources":[],"activatedSources":[],"unsupportedSources":[{"id":"client-source","reason":"contract_unavailable"}]})
+    );
+    assert!(receipt["owner"].is_null());
+    assert!(
+        !serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("private source payload")
+    );
+    assert_eq!(
+        fixture
+            .source
+            .complete_startup(fixture.startup_provider.as_ref())
+            .unwrap(),
+        StartupObservation::Ready(false)
+    );
+    assert_eq!(
+        fixture
+            .source
+            .request(json!({"op":"status","operationId":STARTUP_OPERATION}))
+            .unwrap(),
+        receipt
+    );
+    assert!(
+        fixture.source.0.state.lock().unwrap().provider.is_none(),
+        "the failed source must release its selected owner"
+    );
+    assert!(
+        fixture
+            .source
+            .0
+            .startup
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .failure
+            .is_none(),
+        "valid terminal metadata must not become an identity/schema rejection"
+    );
+    fixture.source.retire();
+    assert_eq!(
+        fixture.source.refresh_startup().unwrap_err().code,
+        "client_bridge_retired"
+    );
+    assert_eq!(
+        fixture.source.cached_startup_observation(),
+        StartupObservation::Ready(false)
+    );
+    fixture.close();
+}
+
+#[test]
+fn activation_diagnostics_report_static_fields_and_only_safe_source_error_codes() {
+    let offer = json!({"operations":[],"protocols":[]});
+    let invalid =
+        json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pending":false});
+    let failure =
+        crate::client_launch::validate_client_source_activation(&invalid, &offer).unwrap_err();
+    let diagnostic = activation_failure_diagnostic(
+        &failure,
+        &json!({"sourceError":"backend_route_timeout","endpoint":{"token":"private token"},"code":"private source"}),
+    );
+    assert!(diagnostic.contains("field=activation.pendingSources"));
+    assert!(diagnostic.contains("category=missing_paired_field"));
+    assert!(diagnostic.contains("sourceError=backend_route_timeout"));
+    assert!(!diagnostic.contains("private"));
+    for value in [
+        json!("unsafe/path?token=private"),
+        json!("line\nprivate"),
+        json!("x".repeat(81)),
+        json!({"private":true}),
+    ] {
+        let diagnostic = activation_failure_diagnostic(&failure, &json!({"sourceError":value}));
+        assert!(diagnostic.contains("sourceError=redacted_invalid_code"));
+        assert!(!diagnostic.contains("private"));
     }
 }
 

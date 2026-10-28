@@ -3,6 +3,8 @@ use crate::cdp::{TargetController, TargetError};
 use serde_json::json;
 use std::fs::File;
 
+mod initial_discovery;
+
 fn peer() -> (CdpClient, CdpEventStream, File, File) {
     let (reader, writer_peer) = super::super::tests::blocking_pipe_reader();
     let (writer, reader_peer) = super::super::tests::blocking_pipe_writer();
@@ -402,6 +404,7 @@ fn teardown_or_connection_end_during_owner_publication_cannot_leave_an_entry() {
         let (client, _events) =
             CdpClient::spawn_io(reader, io::sink(), SpawnConfig::default()).unwrap();
         let failed = client.track_session("failed-target", "failed-session");
+        let retirement = client.session_retirement("failed-session", &failed);
         let weak = Arc::downgrade(&failed);
         // Publication precedes enqueue. Freeze the issuer to deterministically
         // deliver teardown in that exact interval.
@@ -427,6 +430,11 @@ fn teardown_or_connection_end_during_owner_publication_cannot_leave_an_entry() {
         }
         drop(issuer);
         worker.join().unwrap();
+        assert_eq!(
+            client.wait_for_session_retirements(&[retirement], Instant::now()),
+            !closed,
+            "only the exact teardown event, not connection close, confirms recovery"
+        );
         let state = client.inner.runtime.shared.state.lock().unwrap();
         assert!(state.retiring_sessions.is_empty());
         assert!(state.retirement_requests.is_empty());

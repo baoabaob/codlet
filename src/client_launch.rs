@@ -214,8 +214,9 @@ pub(crate) fn validate_client_source_activation(
     activation: &Value,
     source: &Value,
 ) -> Result<SourceActivation, HostError> {
-    let invalid = || error("client_launch_adapter_unconfirmed");
-    let object = activation.as_object().ok_or_else(invalid)?;
+    let object = activation
+        .as_object()
+        .ok_or_else(|| invalid_activation("activation", "expected_object"))?;
     if object.keys().any(|key| {
         ![
             "installed",
@@ -226,16 +227,30 @@ pub(crate) fn validate_client_source_activation(
         ]
         .contains(&key.as_str())
     }) {
-        return Err(invalid());
+        return Err(invalid_activation("activation", "unexpected_field"));
     }
-    let installed = activation["installed"].as_bool().ok_or_else(invalid)?;
+    let installed = activation["installed"]
+        .as_bool()
+        .ok_or_else(|| invalid_activation("activation.installed", "expected_boolean"))?;
     let activated = activation["activatedSources"]
         .as_array()
-        .ok_or_else(invalid)?;
+        .ok_or_else(|| invalid_activation("activation.activatedSources", "expected_array"))?;
     if installed == activated.is_empty() {
-        return Err(invalid());
+        return Err(invalid_activation(
+            "activation.installed",
+            "inconsistent_active_sources",
+        ));
     }
     validate_activation_metadata(activation, source, installed)
+}
+
+fn invalid_activation(field: &'static str, category: &'static str) -> HostError {
+    // Static protocol locations/categories only: never include payload values,
+    // unknown key names, endpoint credentials or Native source text.
+    HostError::new(
+        "client_launch_adapter_unconfirmed",
+        format!("Client source activation rejected: field={field}; category={category}"),
+    )
 }
 
 fn validate_activation_metadata(
@@ -243,125 +258,210 @@ fn validate_activation_metadata(
     source: &Value,
     installed: bool,
 ) -> Result<SourceActivation, HostError> {
-    let invalid = || error("client_launch_adapter_unconfirmed");
-    let activated = reply["activatedSources"].as_array().ok_or_else(invalid)?;
+    let activated = reply["activatedSources"]
+        .as_array()
+        .ok_or_else(|| invalid_activation("activation.activatedSources", "expected_array"))?;
     let unsupported = match reply.get("unsupportedSources") {
-        Some(value) => value.as_array().ok_or_else(invalid)?,
-        None => return Err(invalid()),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| invalid_activation("activation.unsupportedSources", "expected_array"))?,
+        None => {
+            return Err(invalid_activation(
+                "activation.unsupportedSources",
+                "missing_field",
+            ));
+        }
     };
     let pending_sources = match (reply.get("pending"), reply.get("pendingSources")) {
         (None, None) => &[][..],
         (Some(pending), Some(sources)) => {
-            let pending = pending.as_bool().ok_or_else(invalid)?;
-            let sources = sources.as_array().ok_or_else(invalid)?;
+            let pending = pending
+                .as_bool()
+                .ok_or_else(|| invalid_activation("activation.pending", "expected_boolean"))?;
+            let sources = sources
+                .as_array()
+                .ok_or_else(|| invalid_activation("activation.pendingSources", "expected_array"))?;
             if pending == sources.is_empty() {
-                return Err(invalid());
+                return Err(invalid_activation(
+                    "activation.pendingSources",
+                    "inconsistent_pending_sources",
+                ));
             }
             sources.as_slice()
         }
-        _ => return Err(invalid()),
+        (Some(_), None) => {
+            return Err(invalid_activation(
+                "activation.pendingSources",
+                "missing_paired_field",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(invalid_activation(
+                "activation.pending",
+                "missing_paired_field",
+            ));
+        }
     };
-    if (installed && activated.is_empty()) || activated.len() > 8 || unsupported.len() > 8 {
-        return Err(invalid());
+    if (installed && activated.is_empty()) || activated.len() > 8 {
+        return Err(invalid_activation(
+            "activation.activatedSources",
+            "invalid_count",
+        ));
     }
-    let offered_operations = source["operations"].as_array().ok_or_else(invalid)?;
-    let offered_protocols = source["protocols"].as_array().ok_or_else(invalid)?;
+    if unsupported.len() > 8 {
+        return Err(invalid_activation(
+            "activation.unsupportedSources",
+            "invalid_count",
+        ));
+    }
+    let offered_operations = source["operations"]
+        .as_array()
+        .ok_or_else(|| invalid_activation("source.operations", "expected_array"))?;
+    let offered_protocols = source["protocols"]
+        .as_array()
+        .ok_or_else(|| invalid_activation("source.protocols", "expected_array"))?;
     let mut ids = BTreeSet::new();
     for entry in activated {
-        let record = entry.as_object().ok_or_else(invalid)?;
+        let record = entry.as_object().ok_or_else(|| {
+            invalid_activation("activation.activatedSources[]", "expected_object")
+        })?;
         if record.len() != 4
             || !record.contains_key("id")
             || !record.contains_key("operations")
             || !record.contains_key("protocols")
             || !record.contains_key("coverage")
         {
-            return Err(invalid());
+            return Err(invalid_activation(
+                "activation.activatedSources[]",
+                "invalid_fields",
+            ));
         }
-        let id = entry["id"]
-            .as_str()
-            .filter(|id| label(id))
-            .ok_or_else(invalid)?;
+        let id = entry["id"].as_str().filter(|id| label(id)).ok_or_else(|| {
+            invalid_activation("activation.activatedSources[].id", "invalid_identifier")
+        })?;
         if !ids.insert(id) {
-            return Err(invalid());
+            return Err(invalid_activation(
+                "activation.sourceIds",
+                "duplicate_identifier",
+            ));
         }
         for (field, offered) in [
             ("operations", offered_operations),
             ("protocols", offered_protocols),
         ] {
+            let diagnostic_field = if field == "operations" {
+                "activation.activatedSources[].operations"
+            } else {
+                "activation.activatedSources[].protocols"
+            };
             let values = entry[field]
                 .as_array()
                 .filter(|values| !values.is_empty() && values.len() <= offered.len())
-                .ok_or_else(invalid)?;
+                .ok_or_else(|| invalid_activation(diagnostic_field, "invalid_array"))?;
             let mut seen = BTreeSet::new();
             for value in values {
-                let value = value.as_str().ok_or_else(invalid)?;
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| invalid_activation(diagnostic_field, "expected_string"))?;
                 if !offered
                     .iter()
                     .any(|allowed| allowed.as_str() == Some(value))
                     || !seen.insert(value)
                 {
-                    return Err(invalid());
+                    return Err(invalid_activation(
+                        diagnostic_field,
+                        "unoffered_or_duplicate_value",
+                    ));
                 }
             }
         }
         let coverage = entry["coverage"]
             .as_array()
             .filter(|values| !values.is_empty() && values.len() <= 8)
-            .ok_or_else(invalid)?;
+            .ok_or_else(|| {
+                invalid_activation("activation.activatedSources[].coverage", "invalid_array")
+            })?;
         let mut seen = BTreeSet::new();
         for value in coverage {
-            let value = value
-                .as_str()
-                .filter(|value| label(value))
-                .ok_or_else(invalid)?;
+            let value = value.as_str().filter(|value| label(value)).ok_or_else(|| {
+                invalid_activation(
+                    "activation.activatedSources[].coverage",
+                    "invalid_identifier",
+                )
+            })?;
             if !seen.insert(value) {
-                return Err(invalid());
+                return Err(invalid_activation(
+                    "activation.activatedSources[].coverage",
+                    "duplicate_identifier",
+                ));
             }
         }
     }
     for entry in unsupported {
-        let record = entry.as_object().ok_or_else(invalid)?;
+        let record = entry.as_object().ok_or_else(|| {
+            invalid_activation("activation.unsupportedSources[]", "expected_object")
+        })?;
         if record.len() != 2 || !record.contains_key("id") || !record.contains_key("reason") {
-            return Err(invalid());
+            return Err(invalid_activation(
+                "activation.unsupportedSources[]",
+                "invalid_fields",
+            ));
         }
-        let id = entry["id"]
-            .as_str()
-            .filter(|id| label(id))
-            .ok_or_else(invalid)?;
-        if !ids.insert(id)
-            || !matches!(
-                entry["reason"].as_str(),
-                Some(
-                    "unsupported_build"
-                        | "hook_unavailable"
-                        | "child_unavailable"
-                        | "route_unavailable"
-                        | "timeout"
-                        | "ambiguous_contract"
-                        | "binding_changed"
-                        | "contract_unavailable"
-                )
+        let id = entry["id"].as_str().filter(|id| label(id)).ok_or_else(|| {
+            invalid_activation("activation.unsupportedSources[].id", "invalid_identifier")
+        })?;
+        if !ids.insert(id) {
+            return Err(invalid_activation(
+                "activation.sourceIds",
+                "duplicate_identifier",
+            ));
+        }
+        if !matches!(
+            entry["reason"].as_str(),
+            Some(
+                "unsupported_build"
+                    | "hook_unavailable"
+                    | "child_unavailable"
+                    | "route_unavailable"
+                    | "timeout"
+                    | "ambiguous_contract"
+                    | "binding_changed"
+                    | "contract_unavailable"
             )
-        {
-            return Err(invalid());
+        ) {
+            return Err(invalid_activation(
+                "activation.unsupportedSources[].reason",
+                "unrecognized_reason",
+            ));
         }
     }
     for entry in pending_sources {
-        let record = entry.as_object().ok_or_else(invalid)?;
+        let record = entry
+            .as_object()
+            .ok_or_else(|| invalid_activation("activation.pendingSources[]", "expected_object"))?;
         if record.len() != 2 || !record.contains_key("id") || !record.contains_key("reason") {
-            return Err(invalid());
+            return Err(invalid_activation(
+                "activation.pendingSources[]",
+                "invalid_fields",
+            ));
         }
-        let id = entry["id"]
-            .as_str()
-            .filter(|id| label(id))
-            .ok_or_else(invalid)?;
-        if !ids.insert(id)
-            || !matches!(
-                entry["reason"].as_str(),
-                Some("initializing" | "child_unavailable" | "backend_config_pending")
-            )
-        {
-            return Err(invalid());
+        let id = entry["id"].as_str().filter(|id| label(id)).ok_or_else(|| {
+            invalid_activation("activation.pendingSources[].id", "invalid_identifier")
+        })?;
+        if !ids.insert(id) {
+            return Err(invalid_activation(
+                "activation.sourceIds",
+                "duplicate_identifier",
+            ));
+        }
+        if !matches!(
+            entry["reason"].as_str(),
+            Some("initializing" | "child_unavailable" | "backend_config_pending")
+        ) {
+            return Err(invalid_activation(
+                "activation.pendingSources[].reason",
+                "unrecognized_reason",
+            ));
         }
     }
     Ok(SourceActivation {
@@ -450,6 +550,36 @@ mod tests {
                 "{invalid}"
             );
         }
+    }
+
+    #[test]
+    fn activation_schema_failures_identify_fields_without_logging_payload_values() {
+        let offer = json!({"operations":["http.intercept"],"protocols":["http"]});
+        let missing = json!({"installed":false,"pending":false,"activatedSources":[],"unsupportedSources":[{"id":"client-source","reason":"backend_route_timeout"}]});
+        let failure = validate_client_source_activation(&missing, &offer).unwrap_err();
+        assert_eq!(failure.code, "client_launch_adapter_unconfirmed");
+        assert!(
+            failure
+                .message
+                .contains("field=activation.pendingSources; category=missing_paired_field")
+        );
+        let mut invalid = missing;
+        invalid["pendingSources"] = json!([]);
+        invalid["unsupportedSources"][0]["reason"] = json!("private endpoint/token source payload");
+        let failure = validate_client_source_activation(&invalid, &offer).unwrap_err();
+        assert!(failure.message.contains(
+            "field=activation.unsupportedSources[].reason; category=unrecognized_reason"
+        ));
+        assert!(!failure.message.contains("private"));
+        invalid["unsupportedSources"][0]["reason"] = json!("backend_route_timeout");
+        assert!(
+            validate_client_source_activation(&invalid, &offer).is_err(),
+            "arbitrary safe diagnostic codes are not activation reason enum values"
+        );
+        invalid["unsupportedSources"][0]["reason"] = json!("contract_unavailable");
+        let terminal = validate_client_source_activation(&invalid, &offer).unwrap();
+        assert!(!terminal.installed);
+        assert!(!terminal.pending);
     }
 
     const SOURCE: &str = "exports.clientSource=()=>({code:'module.exports={};'});";

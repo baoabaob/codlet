@@ -11,7 +11,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use super::{CdpClient, CdpEvent, CdpEventStream, CdpRequest, ClientError, EventStreamError};
+use super::{
+    CdpClient, CdpEvent, CdpEventStream, CdpRequest, ClientError, EventStreamError,
+    SessionRetirement,
+};
 
 pub const MAIN_RENDERER_URL: &str = "app://-/index.html";
 const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -60,6 +63,36 @@ pub enum TargetError {
     EventStream(#[from] EventStreamError),
 }
 
+/// Only the initial startup coordinator may observe these exact retirement
+/// receipts. Public discovery retains its original error type and behavior.
+pub(crate) struct DiscoveryFailure {
+    pub(crate) error: TargetError,
+    pub(crate) retirements: Vec<SessionRetirement>,
+}
+
+impl From<TargetError> for DiscoveryFailure {
+    fn from(error: TargetError) -> Self {
+        Self {
+            error,
+            retirements: Vec::new(),
+        }
+    }
+}
+
+impl From<ClientError> for DiscoveryFailure {
+    fn from(error: ClientError) -> Self {
+        TargetError::from(error).into()
+    }
+}
+
+impl DiscoveryFailure {
+    pub(crate) fn is_initialization_timeout(&self) -> bool {
+        !self.retirements.is_empty()
+            && matches!(&self.error, TargetError::Client(ClientError::RequestTimedOut { method, .. })
+                if matches!(method.as_str(), "Runtime.enable" | "Page.enable"))
+    }
+}
+
 #[derive(Clone)]
 pub struct TargetSession {
     client: CdpClient,
@@ -68,6 +101,7 @@ pub struct TargetSession {
     deadline: Duration,
     expires_at: Option<Instant>,
     live: Arc<AtomicBool>,
+    retirement: SessionRetirement,
 }
 
 #[derive(Clone)]
@@ -109,16 +143,18 @@ impl TargetSession {
         target_id: String,
         expires_at: Instant,
         deadline: Duration,
-    ) -> Result<Self, TargetError> {
+    ) -> Result<Self, DiscoveryFailure> {
         // Capture teardown that races the attach response, before the returned
         // session ID can be registered with the reader's liveness guard.
         let attachment_events = client.subscribe_events(None);
-        let attach = client.request(
-            "Target.attachToTarget",
-            Some(json!({"targetId": target_id, "flatten": true})),
-            None,
-            remaining_budget(expires_at),
-        )?;
+        let attach = client
+            .start_request_until(
+                "Target.attachToTarget",
+                Some(json!({"targetId": target_id, "flatten": true})),
+                None,
+                expires_at,
+            )?
+            .wait()?;
         let attach: AttachResult = serde_json::from_value(
             attach
                 .result
@@ -127,6 +163,7 @@ impl TargetSession {
         .map_err(|error| TargetError::InvalidAttach(error.to_string()))?;
 
         let live = client.track_session(&target_id, &attach.session_id);
+        let retirement = client.session_retirement(&attach.session_id, &live);
         while let Ok(event) = attachment_events.recv_timeout(Duration::ZERO) {
             let ended = match event.method.as_str() {
                 "Target.targetDestroyed" => {
@@ -149,6 +186,7 @@ impl TargetSession {
             };
             if ended {
                 live.store(false, Ordering::Release);
+                retirement.confirm_teardown();
             }
         }
         drop(attachment_events);
@@ -159,20 +197,22 @@ impl TargetSession {
             deadline,
             expires_at: None,
             live,
+            retirement,
         };
         let initialized = (|| -> Result<(), ClientError> {
-            session.client.request(
-                "Runtime.enable",
-                None,
-                Some(&session.session_id),
-                remaining_budget(expires_at),
-            )?;
-            session.client.request(
-                "Page.enable",
-                None,
-                Some(&session.session_id),
-                remaining_budget(expires_at),
-            )?;
+            session
+                .client
+                .start_request_until(
+                    "Runtime.enable",
+                    None,
+                    Some(&session.session_id),
+                    expires_at,
+                )?
+                .wait()?;
+            session
+                .client
+                .start_request_until("Page.enable", None, Some(&session.session_id), expires_at)?
+                .wait()?;
             Ok(())
         })();
         if let Err(error) = initialized {
@@ -182,7 +222,10 @@ impl TargetSession {
                 &session.live,
                 deadline,
             );
-            return Err(error.into());
+            return Err(DiscoveryFailure {
+                error: error.into(),
+                retirements: vec![session.retirement.clone()],
+            });
         }
         Ok(session)
     }
@@ -197,6 +240,15 @@ impl TargetSession {
 
     pub(crate) fn is_live(&self) -> bool {
         self.live.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn retire_undelivered(&self) {
+        self.client.retire_failed_session(
+            &self.target_id,
+            &self.session_id,
+            &self.live,
+            self.deadline,
+        );
     }
 
     pub(crate) fn request_deadline(&self) -> Result<Instant, TargetError> {
@@ -302,56 +354,62 @@ impl TargetController {
         let expires_at = started_at
             .checked_add(deadline)
             .ok_or(ClientError::DeadlineOutOfRange)?;
+        Self::discover_until(client, events, expires_at, deadline).map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn discover_until(
+        client: CdpClient,
+        events: CdpEventStream,
+        expires_at: Instant,
+        deadline: Duration,
+    ) -> Result<(Self, Vec<TargetSession>), DiscoveryFailure> {
+        let started_at = Instant::now();
         let mut controller = Self {
             client,
             events,
             sessions: HashMap::new(),
             deadline,
         };
-        controller.client.request(
-            "Target.setDiscoverTargets",
-            Some(json!({"discover": true})),
-            None,
-            remaining_budget(expires_at),
-        )?;
+        controller
+            .client
+            .start_request_until(
+                "Target.setDiscoverTargets",
+                Some(json!({"discover": true})),
+                None,
+                expires_at,
+            )?
+            .wait()?;
 
         let mut attempts = 0_u64;
         let mut last_observations = Vec::new();
         loop {
             let remaining = remaining_budget(expires_at);
             if remaining.is_zero() {
-                return Err(main_target_not_found(
-                    started_at,
-                    attempts,
-                    last_observations,
-                ));
+                return Err(main_target_not_found(started_at, attempts, last_observations).into());
             }
             attempts = attempts
                 .checked_add(1)
                 .expect("target discovery attempt count overflowed");
             let targets = controller
                 .client
-                .request("Target.getTargets", None, None, remaining)?;
+                .start_request_until("Target.getTargets", None, None, expires_at)?
+                .wait()?;
             let observations = parse_target_observations(
                 targets
                     .result
                     .ok_or_else(|| TargetError::InvalidGetTargets("missing result".to_owned()))?,
             )?;
-            let sessions = match controller.attach_matching(&observations, expires_at) {
+            let sessions = match controller.attach_matching_owned(&observations, expires_at) {
                 Ok(sessions) => sessions,
-                Err(error) => {
+                Err(mut failure) => {
                     // None of this discovery transaction's sessions has reached
                     // its caller. Roll back its already initialized siblings as
                     // well as the failed session; unrelated owners stay live.
                     for session in controller.sessions.values() {
-                        session.client.retire_failed_session(
-                            &session.target_id,
-                            &session.session_id,
-                            &session.live,
-                            session.deadline,
-                        );
+                        session.retire_undelivered();
+                        failure.retirements.push(session.retirement.clone());
                     }
-                    return Err(error);
+                    return Err(failure);
                 }
             };
             if !sessions.is_empty() {
@@ -361,11 +419,7 @@ impl TargetController {
 
             let remaining = remaining_budget(expires_at);
             if remaining.is_zero() {
-                return Err(main_target_not_found(
-                    started_at,
-                    attempts,
-                    last_observations,
-                ));
+                return Err(main_target_not_found(started_at, attempts, last_observations).into());
             }
             thread::sleep(TARGET_POLL_INTERVAL.min(remaining));
         }
@@ -447,6 +501,15 @@ impl TargetController {
         observations: &[TargetObservation],
         expires_at: Instant,
     ) -> Result<Vec<TargetSession>, TargetError> {
+        self.attach_matching_owned(observations, expires_at)
+            .map_err(|failure| failure.error)
+    }
+
+    fn attach_matching_owned(
+        &mut self,
+        observations: &[TargetObservation],
+        expires_at: Instant,
+    ) -> Result<Vec<TargetSession>, DiscoveryFailure> {
         let mut attached = Vec::new();
         for observation in observations
             .iter()
@@ -464,12 +527,16 @@ impl TargetController {
                 self.deadline,
             ) {
                 Ok(session) => session,
-                Err(TargetError::Client(ClientError::Remote {
-                    method,
-                    error_code: -32602,
-                    message,
+                Err(DiscoveryFailure {
+                    error:
+                        TargetError::Client(ClientError::Remote {
+                            method,
+                            error_code: -32602,
+                            message,
+                            ..
+                        }),
                     ..
-                })) if method == "Target.attachToTarget"
+                }) if method == "Target.attachToTarget"
                     && message == "No target with given id found" =>
                 {
                     // A queued creation event can outlive its window during

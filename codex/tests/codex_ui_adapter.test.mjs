@@ -7,7 +7,7 @@ import {uiFixture,tick,deferred} from './support/ui-fixture.mjs';
 const require=createRequire(new URL('../frontend/package.json',import.meta.url)),{buildSync}=require('esbuild');
 const cwd=fileURLToPath(new URL('../frontend',import.meta.url));
 const compile=(path,name)=>buildSync({absWorkingDir:cwd,stdin:{contents:readFileSync(new URL(path,import.meta.url),'utf8'),resolveDir:path.includes('native-shell')?cwd:cwd+'/src/adapter',sourcefile:path},bundle:true,write:false,format:'iife',globalName:name,platform:'browser',loader:{'.svg':'text'},define:{'process.env.NODE_ENV':'"production"'}}).outputFiles[0].text;
-const shellSource=compile('./support/native-shell.js','NativeShell'),adapterSource=compile('../frontend/src/adapter/navigation.js','Adapter');
+const shellSource=compile('./support/native-shell.js','NativeShell'),adapterSource=compile('../frontend/src/adapter/navigation.js','Adapter'),discoverySource=compile('../frontend/src/adapter/discovery.js','Discovery');
 function fixture(t,options){const f=uiFixture();const native={...f.window.eval(shellSource+';NativeShell;')},shell=native.mount(options),adapter=f.window.eval(adapterSource+';Adapter;');
   native.SidebarGroup=shell.SidebarGroup;
   native.RailButton=shell.RailButton;native.RailTooltip=shell.RailTooltip;
@@ -81,6 +81,77 @@ test('a contextual sidebar without a rail keeps pages outside the native New cha
   assert.equal(entry.previousElementSibling.dataset.nativeDragRow,'');
   assert.equal(f.document.querySelector('[data-native-drag-row]').contains(entry),false);
   f.control('Codlet').click();await tick();assert.ok(f.document.querySelector('[data-codlet-page-host]'));
+});
+
+test('the current mounted navigation replaces classic and rail entries without replacing page leases or routes',async t=>{
+  const f=fixture(t,{dataRouter:true,groupedNewChat:true});
+  const discovery=f.window.eval(discoverySource+';Discovery;');
+  f.native.resolveNavigation=()=>discovery.navigationComponents(f.shell.navigationModules);
+  const {lease,reply}=register(f);await tick();
+  const routes=[...f.shell.routes],container=f.document.querySelector('[data-codlet-native-navigation]');
+  assert.equal(f.control('Codlet').className,'sidebar-item');
+  f.shell.setRail(true);await tick();
+  assert.equal(f.document.querySelectorAll('[data-codlet-navigation-entry]').length,1);
+  assert.equal(f.document.querySelector('[data-codlet-native-navigation]'),container);
+  assert.equal(container.className,'contents');
+  assert.ok(f.document.querySelector('[data-app-navigation-rail]').contains(container));
+  assert.equal(f.control('Codlet').hasAttribute('data-native-rail-button'),true);
+  f.control('Codlet').click();await tick();assert.equal(f.shell.navigator.location.pathname,reply.path);
+  f.shell.setRail(false);await tick();
+  assert.deepEqual(f.errors,[]);
+  assert.equal(f.document.querySelectorAll('[data-codlet-navigation-entry]').length,1);
+  assert.equal(f.control('Codlet').className,'sidebar-item');assert.equal(container.className,'flex flex-col gap-px');
+  routes.forEach((route,index)=>assert.equal(f.shell.routes[index],route));
+  assert.equal(lease.isConnected,true);assert.equal(f.errors.length,0);
+});
+
+test('a CSS lookalike navigation cannot obscure the current classic Native router',async t=>{
+  const f=fixture(t,{dataRouter:true,groupedNewChat:true}),unrelated=f.document.createElement('nav');
+  unrelated.innerHTML='<button class="sidebar-item">Unrelated</button>';
+  f.document.getElementById('root').append(unrelated);
+  assert.equal(f.adapter.locateHost().tree,f.shell.tree);
+  register(f);await tick();assert.ok(f.control('Codlet'));assert.equal(unrelated.querySelector('[data-codlet-native-navigation]'),null);
+});
+
+test('a current classic contract with two equal-priority placements reports drift instead of choosing the first row',async t=>{
+  const f=fixture(t,{dataRouter:true,groupedNewChat:true,duplicateFixedRows:true});
+  register(f);await tick();
+  assert.equal(f.document.querySelector('[data-codlet-native-navigation]'),null);
+  assert.equal(f.errors.length,1);assert.equal(f.errors[0].code,'ui_host_drift');
+  assert.match(f.errors[0].message,/placement is ambiguous/);
+  assert.throws(()=>register(f,{id:'other',token:'other-owner-token-123456'}),{code:'ui_host_drift'});
+});
+
+test('dynamic navigation waits through an owner gap, remounts once, and stops after provider retirement',async t=>{
+  const f=fixture(t,{dataRouter:true,groupedNewChat:true,rail:true});
+  const discovery=f.window.eval(discoverySource+';Discovery;');
+  f.native.resolveNavigation=()=>discovery.nativeNavigation(f.native.React,f.shell.navigationModules);
+  register(f);await tick();
+  const root=f.document.getElementById('root'),navs=[...root.querySelectorAll('nav')],parent=navs[0].parentElement;
+  navs.forEach(nav=>nav.remove());await tick();
+  assert.equal(root.querySelector('[data-codlet-navigation-entry]'),null);assert.deepEqual(f.errors,[]);
+  navs.forEach(nav=>parent.prepend(nav));await tick();
+  assert.equal(root.querySelectorAll('[data-codlet-navigation-entry]').length,1);
+  f.navigation.dispose();f.shell.setRail(false);await tick();
+  assert.equal(root.querySelector('[data-codlet-native-navigation]'),null);assert.deepEqual(f.errors,[]);
+});
+
+test('a new navigation contract is rendered after its temporarily missing placement becomes ready',async t=>{
+  const f=fixture(t,{dataRouter:true,groupedNewChat:true});
+  const discovery=f.window.eval(discoverySource+';Discovery;');
+  f.native.resolveNavigation=()=>discovery.nativeNavigation(f.native.React,f.shell.navigationModules);
+  register(f);await tick();
+  f.shell.setRail(true);
+  const home=f.document.querySelector('[data-sidebar-destination="builtin:home"]');
+  let group=home[Object.keys(home).find(key=>key.startsWith('__reactFiber$'))];
+  while(group.type!==f.shell.navigationModules[0].SidebarGroup)group=group.return;
+  const parent=group.child.stateNode;group.child.stateNode=null;
+  await tick();assert.equal(f.document.querySelector('[data-codlet-native-navigation]'),null);
+  group.child.stateNode=parent;parent.append(f.document.createElement('span'));await tick();
+  assert.equal(f.document.querySelectorAll('[data-codlet-navigation-entry]').length,1);
+  assert.equal(f.control('Codlet').hasAttribute('data-native-rail-button'),true);
+  assert.equal(f.document.querySelector('[data-codlet-native-navigation]').className,'contents');
+  assert.deepEqual(f.errors,[]);
 });
 
 test('reviewed rail pages use native icon buttons and tooltips outside the contextual and sortable sidebars',async t=>{

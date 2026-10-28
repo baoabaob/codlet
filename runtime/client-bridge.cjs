@@ -187,13 +187,13 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     },
   });
 
-  const status = () => ({ ...identity(), epoch, owner: active?.owner ?? null, generation: active?.generation ?? null,
-    sourceSha256:active?createHash('sha256').update(active.code).digest('hex'):null,coreVersion:active?.coreVersion??null,
-    activation: active?.runtime.inspect?.().activation ?? active?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect(),
+  const status = () => { const current=closed?null:active;return ({ ...identity(), epoch, owner: current?.owner ?? null, generation: current?.generation ?? null,
+    sourceSha256:current?createHash('sha256').update(current.code).digest('hex'):null,coreVersion:current?.coreVersion??null,
+    activation: current?.runtime.inspect?.().activation ?? current?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect(),
     ...(configuration.ownedFixtureRoutes===true?{fixtureFactoryEvidence:fixtureEvidence()}:{}),
-    onlineUpdate: {protocol: 1, admissionVersion:1, fixtureExplicitSource:resources.has('ownedFixtureRoute')?{kind:'fixture-explicit-source',registered:true}:null, handoffVersion: active?.runtime.handoffVersion ?? null, writes: writes.inspect(), leaseEpoch,
+    onlineUpdate: {protocol: 1, admissionVersion:1, fixtureExplicitSource:resources.has('ownedFixtureRoute')?{kind:'fixture-explicit-source',registered:true}:null, handoffVersion: current?.runtime.handoffVersion ?? null, writes: writes.inspect(), leaseEpoch,
       admission:admission?{operationId:admission.id,epoch:admission.epoch,phase:admission.phase,lastSourceOutcome:admission.lastSourceOutcome??null}:null,
-      retainedCore: ['rust-traffic', 'client-bridge', 'module-observer'], retainedCoreActivation: 'nextStart'} });
+      retainedCore: ['rust-traffic', 'client-bridge', 'module-observer'], retainedCoreActivation: 'nextStart'} }); };
   const generationContext = signal => Object.freeze({...context, onlineUpdates: Object.freeze({
     signal, epoch: () => epoch, accepting: () => writes.inspect().accepting,
     execute: (input, handler) => writes.execute(input, handler),
@@ -445,7 +445,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   const bridge=Object.freeze({
     async endpoint() { await listening; return { version: 1, host: '127.0.0.1', port: server.address().port, token: configuration.token, ...identity() }; },
     async installInitial(selection) {
-      if (active || epoch !== 0) throw fail('client_bridge_initial_state_invalid');
+      if (closed || active || epoch !== 0) throw fail('client_bridge_initial_state_invalid');
       if (!selection) return;
       // Before entry, native lazy bindings and children are still being created.
       // Install synchronously; readiness is awaited after the client is resumed.
@@ -456,12 +456,20 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       if (!runtime || typeof runtime.ready !== 'function' || typeof runtime.close !== 'function') throw fail('client_bridge_exports_invalid');
       active = { ...selection, configuration, runtime, activation: null };
     },
-    async ready() { await listening; if (active) {
+    async ready() { if(closed)return status();await listening;if(closed)return status();if (active) {
       const selected=active;
-      selected.readyPromise??=Promise.resolve().then(()=>selected.runtime.ready());
-      let activation;try{activation=await selected.readyPromise;}catch(error){sourceError=codeOf(error);activation={installed:false,pending:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:sourceError}]};}
-      if(active!==selected)return status();
-      if(!activation?.installed&&activation?.pending!==true){sourceError??='client_bridge_source_unavailable';await closeActive();lastActivation=activation;}else {selected.activation=activation;sourceError=null;}
+      selected.readyPromise??=Promise.resolve().then(()=>{
+        if(closed||active!==selected)return undefined;
+        return selected.runtime.ready();
+      });
+      let activation,readyError=null;try{activation=await selected.readyPromise;}catch(error){
+        readyError=codeOf(error);
+        // A rejected source contract is terminal. Preserve its actual finite
+        // error code separately from the activation protocol's reason enum.
+        activation={installed:false,pending:false,pendingSources:[],activatedSources:[],unsupportedSources:[{id:'client-source',reason:'contract_unavailable'}]};
+      }
+      if(closed||active!==selected)return status();
+      if(!activation?.installed&&activation?.pending!==true){sourceError=readyError??sourceError??'client_bridge_source_unavailable';await closeActive();lastActivation=activation;}else {selected.activation=activation;sourceError=null;}
     } return status(); },
     inspect: status,
     closeInspector() { setTimeout(()=>require('node:inspector').close(),50);return true; },

@@ -21,6 +21,16 @@ The project's current platform scope is based on the official [Windows deploymen
 
 ## Client integration
 
+The Windows x64 local candidate, Core **1.0.0-rc.20**, passed actual isolated
+Native acceptance on package `26.1023.6123.0` / app `26.1023.50603` / build
+`22391`, and regression checks on `26.1021.3705.0` / app `26.1021.31345` /
+build `21828`. The same production executable covered conversations, permission
+reads, classic/rail transitions, project/list grouping and normal shutdown;
+[rc.20 validation](releases/1.0.0-rc.20/validation.md) records its exact scope.
+The final release and Microsoft distribution responses still supplied `.6123.0`;
+the separate Store notification for `26.1023.6621.0` is not an acceptance record
+for that package. Remote rc.20 publication remains separate.
+
 Core's maintained Native startup and source mappings live in `codex/compatibility/client-profiles.json`. The retired pre-v1 catalog is preserved in [the Core history archive](history/core/client-profiles-before-v1.json). Actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Core probes individual interfaces on an unlisted build; a missing or ambiguous contract makes the affected capability unavailable or unknown. The runtime skill discovers the mounted local request client independently. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists. Local candidate evidence does not rewrite historical acceptance records.
 
 ## Independently published acceptance records

@@ -41,7 +41,7 @@ Concrete method shapes live in [types](../types). Core maintains the implementat
 ## Evidence and archives
 
 - [Release records](releases/README.md): exact sources, immutable packages, validation and limits for each candidate.
-- [Current Windows validation](releases/1.0.0-rc.19/validation.md); the [first v1 validation](releases/1.0.0-rc.1/validation.md) and [implementation](releases/1.0.0-rc.1/implementation.md) retain their original candidate scope.
+- [Current Windows candidate validation](releases/1.0.0-rc.20/validation.md) records actual Native checks on builds 22391 and 21828; remote publication is separate. [rc.19](releases/1.0.0-rc.19/validation.md), the [first v1 validation](releases/1.0.0-rc.1/validation.md) and [implementation](releases/1.0.0-rc.1/implementation.md) retain their original candidate scope.
 - [Historical research](history/README.md): dated Core investigations, imported Adapter specifications and previous release readiness.
 
 Native identity inventories referenced by current code remain beside their current compatibility documents. Historical commands and absolute report paths document the original run; they are not instructions to rerun against a daily client.

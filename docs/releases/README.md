@@ -2,6 +2,7 @@
 
 | Candidate | Record |
 | --- | --- |
+| 1.0.0-rc.20 | [Build 22391/21828 acceptance and live sidebar adaptation](1.0.0-rc.20/validation.md) |
 | 1.0.0-rc.19 | [Runtime skill registration and transcript positioning](1.0.0-rc.19/validation.md) |
 | 1.0.0-rc.18 | [Native ownership discovery and joint updates](1.0.0-rc.18/validation.md) |
 | 1.0.0-rc.17 | [Native request continuity and build 21828](1.0.0-rc.17/validation.md) |
@@ -21,6 +22,6 @@
 | 1.0.0-rc.2 | [Capability-based integration and validation](1.0.0-rc.2/validation.md) |
 | 1.0.0-rc.1 | [Implementation and migration](1.0.0-rc.1/implementation.md), [Windows validation and package identities](1.0.0-rc.1/validation.md), [macOS packaging](1.0.0-rc.1/macos-packaging.md) |
 
-The latest release record is **1.0.0-rc.19**. Each record identifies its exact implementation, artifacts, publication status and evidence; later documentation or directory changes do not change an existing package's source identity. Never overwrite an archive under an existing version.
+The latest local candidate record is **1.0.0-rc.20**, with actual Windows x64 Native acceptance on builds 22391 and 21828. Remote rc.20 publication is not recorded; the published Windows release remains **1.0.0-rc.19**. Each record identifies its exact implementation, artifacts, publication status and evidence; later documentation or directory changes do not change an existing package's source identity. Never overwrite an archive under an existing version.
 
 See [current readiness](../release-readiness.md) for remaining work and [0.2.0 history](../history/releases/0.2.0-readiness.md) for the earlier release plan.

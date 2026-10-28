@@ -1,4 +1,4 @@
-import { component, componentSource, desktopDocument, loadedAsset, uniqueExport, currentElementAncestry } from '../host-discovery.js';
+import { component, componentSource, desktopDocument, loadedAsset, uniqueExport, currentElementAncestry, classicNavigationItem } from '../host-discovery.js';
 import { reactFactories } from './react-factories.js';
 import {parseExpressionAt} from 'acorn';
 
@@ -33,28 +33,43 @@ function tooltipContentProp(source) {
   if (['renderTooltip', 'contentClassName', 'enabledWhen', 'forceOpen', 'delayDuration', 'disableHoverableContent'].every(marker => source.includes(marker))) return 'content';
   return null;
 }
+const railTooltips = new WeakMap();
 function adaptRailTooltip(React, Tooltip) {
   if (tooltipContentProp(componentSource(Tooltip)) === 'tooltipContent') return Tooltip;
-  return function NativeRailTooltip({ tooltipContent, delayDuration, cloneCustomTrigger, closeOnTriggerClick, variant, ...props }) {
+  const cache = railTooltips.get(React) ?? new WeakMap();
+  railTooltips.set(React, cache);
+  if (cache.has(Tooltip)) return cache.get(Tooltip);
+  const adapted = function NativeRailTooltip({ tooltipContent, delayDuration, cloneCustomTrigger, closeOnTriggerClick, variant, ...props }) {
     return React.createElement(Tooltip, { ...props, content: tooltipContent, ...(delayDuration == null ? {} : { openDelay: delayDuration }) });
   };
+  cache.set(Tooltip, adapted);
+  return adapted;
 }
 function railComponents(modules) {
   const rails = document.querySelectorAll('nav[data-app-navigation-rail="true"]');
   if (!rails.length) throw fail('ui_host_pending', 'Waiting for the native navigation rail');
   if (rails.length !== 1) throw fail('ui_host_drift', 'Native navigation rail is ambiguous');
   const homes = rails[0].querySelectorAll('[data-sidebar-destination="builtin:home"]');
-  if (homes.length !== 1) throw fail('ui_host_pending', 'Waiting for the native Home destination');
+  if (!homes.length) throw fail('ui_host_pending', 'Waiting for the native Home destination');
+  if (homes.length !== 1) throw fail('ui_host_drift', 'Native Home destination ownership is ambiguous');
   const chain = ancestors(homes[0]);
   const exports = new Set(modules.flatMap(module => Object.values(module)));
   const one = (predicate, role) => {
-    const found = [...new Set(chain.filter(f => component(f.type) && exports.has(f.type) && predicate(f.memoizedProps ?? {}, componentSource(f.type))).map(f => f.type))];
+    const found = [...new Set(chain.filter(f => component(f.type) && exports.has(f.type) && predicate(f.memoizedProps ?? {}, componentSource(f.type), f)).map(f => f.type))];
     if (found.length !== 1) throw fail('ui_host_drift', `A unique mounted native ${role} is required (found ${found.length})`);
     return found[0];
   };
   return {
     RailButton: one((props, source) => props.uniform === true && props.iconSize && props['data-sidebar-destination'] === 'builtin:home' && source.includes('data-selected') && source.includes('data-uniform'), 'rail button'),
-    RailTooltip: one((props, source) => { const content = tooltipContentProp(source); return content !== null && props[content] != null && props.side === 'right'; }, 'rail tooltip'),
+    RailTooltip: one((props, source, fiber) => {
+      const content = tooltipContentProp(source);
+      if (content === null || props[content] == null) return false;
+      // Newer Native rails inherit their side from this exact Tooltip's
+      // DefaultsProvider around the nav. Explicit instance props take priority.
+      const defaults = component(fiber.type.DefaultsProvider) && chain.slice(chain.indexOf(fiber) + 1).find(owner =>
+        owner.type === fiber.type.DefaultsProvider && owner.memoizedProps?.side != null);
+      return (props.side ?? defaults?.memoizedProps.side) === 'right';
+    }, 'rail tooltip'),
     SidebarGroup: one((props, source) => props.itemSpacing === 'rail' && source.includes('group/nav-list'), 'sidebar group'),
   };
 }
@@ -62,14 +77,11 @@ function classicComponents(modules) {
   const buttons = [...document.querySelectorAll('nav button.sidebar-item')].filter(button => !button.closest('[data-codlet-native-navigation]'));
   if (!buttons.length) throw fail('ui_host_pending', 'Waiting for native navigation');
   const exports = new Set(modules.flatMap(module => Object.values(module)));
-  const roles = new Set(['sidebar-new-chat', 'sidebar-tasks', 'sidebar-plugins', 'sidebar-library']);
   const items = new Set(), groups = new Set(), navigations = new Set();
   for (const button of buttons) {
     const chain = currentElementAncestry(button);
     if (!chain) continue;
-    const matches = chain.filter(fiber => component(fiber.type) && exports.has(fiber.type) &&
-      roles.has(fiber.memoizedProps?.animatedIcon) && fiber.memoizedProps.label != null && fiber.memoizedProps.icon != null &&
-      typeof fiber.memoizedProps.onClick === 'function' && ['sidebar-item', 'animatedIcon', 'isActive'].every(marker => componentSource(fiber.type).includes(marker)));
+    const matches = chain.filter(fiber => exports.has(fiber.type) && classicNavigationItem(fiber));
     if (matches.length > 1) throw fail('ui_host_drift', 'Native classic navigation row ownership is ambiguous');
     if (!matches.length) continue;
     const item = matches[0];
@@ -85,9 +97,13 @@ function classicComponents(modules) {
   if (items.size !== 1 || groups.size !== 1) throw fail('ui_host_drift', 'A unique mounted native classic navigation contract is required');
   return { SidebarItem: [...items][0], SidebarGroup: [...groups][0] };
 }
-function navigationComponents(modules) {
+export function navigationComponents(modules) {
   if (document.querySelectorAll('nav[data-app-navigation-rail="true"]').length) return railComponents(modules);
   return classicComponents(modules);
+}
+export function nativeNavigation(React, modules) {
+  const navigation = navigationComponents(modules);
+  return { ...navigation, ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}) };
 }
 export function newTaskHook(initial) {
   const values = [...new Set(Object.values(initial))];
@@ -124,7 +140,8 @@ export async function discoverNative({ load = url => import(url), read = async u
     throw fail('ui_react_drift', 'Native React and DOM contracts do not match');
   const appExports = modules.slice(1).flatMap(module => Object.values(module));
   const header = uniqueExport(appExports, value => value && component(value.Header) && component(value.HeaderToolbar) && component(value.Root), 'page header', true);
-  return { React, DOM, Client, ...navigation, NotificationBadge: notificationBadge(appExports), ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
+  const resolveNavigation = () => nativeNavigation(React, modules);
+  return { React, DOM, Client, ...navigation, resolveNavigation, NotificationBadge: notificationBadge(appExports), ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
     nativeDownloadGlyph:nativeDownloadGlyph(Object.values(shared)),
     composerActionProfile: COMPOSER_PROFILE, toolbarInset: 'page', newTaskOptions: { codexAppMode: 'codex' },
     useStartNewConversation: newTaskHook(appExports), compatibility: 'structural' };

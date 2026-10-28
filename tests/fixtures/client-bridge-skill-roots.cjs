@@ -10,7 +10,7 @@ const updateTarget={id:'c'.repeat(64),version:'0.0.0'};
 const bridge=startClientBridge({app:{isReady:()=>false,getAppPath:()=>__dirname}},{token},{
   identity:()=>({...identityMissing?{}:{pid:identityPid},executable:process.execPath,type:'browser'}),
   load:()=>({installElectronTraffic(_electron,_configuration,value){context=value;return {
-    ready:async()=>({installed:false,activatedSources:[],unsupportedSources:[]}),close(){},
+    ready:async()=>{if(process.argv[3]==='ready-reject')throw Object.assign(Error('private source payload'),{code:'backend_route_timeout'});return {installed:false,activatedSources:[],unsupportedSources:[]};},close(){},
     officialUpdateTarget(){return {target:updateTarget,reason:null,installation:null,fixtureCalls:officialCalls,pid:-1,executable:'domain-value',type:'domain-value'};},
     installOfficialUpdate(){officialCalls++;return new Promise(resolve=>{finishUpdate=()=>resolve({accepted:true,target:updateTarget,pid:-1});});}
   };}})

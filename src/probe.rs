@@ -968,6 +968,17 @@ fn start_codlet_runtime_with_connector_filtered(
             connected.client.clone(),
             connected.events,
             REQUEST_DEADLINE,
+            || match connected.process.wait(Duration::ZERO) {
+                Ok(None) => true,
+                Ok(Some(exit_code)) => {
+                    eprintln!("renderer-executor: recovery-stopped; client-exited={exit_code}");
+                    false
+                }
+                Err(error) => {
+                    eprintln!("renderer-executor: recovery-stopped; client-status-error={error}");
+                    false
+                }
+            },
         )
     } else {
         // Raw hosts receive the connection without private URL matching or any
@@ -1085,27 +1096,95 @@ fn discover_runtime_targets(
     client: CdpClient,
     events: CdpEventStream,
     deadline: Duration,
+    mut native_live: impl FnMut() -> bool,
 ) -> (Option<TargetController>, Vec<TargetSession>) {
     let mut first_events = Some(events);
+    let mut previous: Option<crate::cdp::DiscoveryFailure> = None;
     for attempt in 1..=3 {
+        // A recovery slot has the same shared budget as the original discovery
+        // slot. Waiting for exact retirement must not restart that clock.
+        let Some(expires_at) = Instant::now().checked_add(deadline) else {
+            let error = TargetError::Client(crate::cdp::ClientError::DeadlineOutOfRange);
+            eprintln!("renderer-executor: state=unavailable; error={error}");
+            renderer.record_executor_unavailable(&error.to_string());
+            return (None, Vec::new());
+        };
+        let recovery_error = previous.as_ref().map(|failure| failure.error.to_string());
+        if let Some(failure) = previous.take() {
+            loop {
+                let closed = client.closed_reason();
+                let live = native_live();
+                if closed.is_some() || !live || Instant::now() >= expires_at {
+                    eprintln!(
+                        "renderer-executor: recovery-stopped; attempt={attempt}; connection-closed={}; native-live={live}; retirement-confirmed=false; error={}",
+                        closed.is_some(),
+                        failure.error
+                    );
+                    renderer.record_executor_unavailable(&failure.error.to_string());
+                    return (None, Vec::new());
+                }
+                if !failure.is_initialization_timeout()
+                    || client.wait_for_session_retirements(
+                        &failure.retirements,
+                        expires_at.min(Instant::now() + RUNTIME_WAIT_SLICE),
+                    )
+                {
+                    // The process handle is checked again after the wait; EOF
+                    // or process exit cannot serve as a reusable-session ACK.
+                    if client.closed_reason().is_some()
+                        || !native_live()
+                        || Instant::now() >= expires_at
+                    {
+                        eprintln!(
+                            "renderer-executor: recovery-stopped; attempt={attempt}; error={}",
+                            failure.error
+                        );
+                        renderer.record_executor_unavailable(&failure.error.to_string());
+                        return (None, Vec::new());
+                    }
+                    break;
+                }
+            }
+        }
         let events = first_events
             .take()
             .unwrap_or_else(|| client.subscribe_events(None));
-        match TargetController::discover(client.clone(), events, deadline) {
-            Ok((targets, sessions)) => return (Some(targets), sessions),
-            Err(error)
+        match TargetController::discover_until(client.clone(), events, expires_at, deadline) {
+            Ok((targets, sessions)) => {
+                if let Some(error) = recovery_error
+                    && (client.closed_reason().is_some() || !native_live())
+                {
+                    // Initialization ACKs must not publish a new renderer owner
+                    // after the exact Native process has exited.
+                    for session in &sessions {
+                        session.retire_undelivered();
+                    }
+                    eprintln!(
+                        "renderer-executor: state=unavailable; recovery-stopped; error={error}"
+                    );
+                    renderer.record_executor_unavailable(&error);
+                    return (None, Vec::new());
+                }
+                return (Some(targets), sessions);
+            }
+            Err(failure)
                 if attempt < 3
                     && client.closed_reason().is_none()
-                    && retryable_initial_discovery(&error) =>
+                    && (retryable_initial_discovery(&failure.error)
+                        || failure.is_initialization_timeout()) =>
             {
-                // Native can serve the pipe before its browser target registry
-                // is ready or has a main window. Repeat only discovery;
-                // attach/evaluation failures may already have changed a target.
-                eprintln!("renderer-executor: state=waiting; attempt={attempt}; error={error}");
+                eprintln!(
+                    "renderer-executor: state=waiting; attempt={attempt}; error={}",
+                    failure.error
+                );
+                previous = Some(failure);
             }
-            Err(error) => {
-                eprintln!("renderer-executor: state=unavailable; error={error}");
-                renderer.record_executor_unavailable(&error.to_string());
+            Err(failure) => {
+                eprintln!(
+                    "renderer-executor: state=unavailable; error={}",
+                    failure.error
+                );
+                renderer.record_executor_unavailable(&failure.error.to_string());
                 return (None, Vec::new());
             }
         }
@@ -1117,6 +1196,17 @@ fn retryable_initial_discovery(error: &TargetError) -> bool {
     matches!(error, TargetError::MainTargetNotFound { .. })
         || matches!(error, TargetError::Client(crate::cdp::ClientError::RequestTimedOut { method, .. })
             if matches!(method.as_str(), "Target.setDiscoverTargets" | "Target.getTargets"))
+}
+
+#[cfg(test)]
+pub(crate) fn discover_runtime_targets_for_test(
+    renderer: &mut RendererRuntime,
+    client: CdpClient,
+    events: CdpEventStream,
+    deadline: Duration,
+    native_live: impl FnMut() -> bool,
+) -> (Option<TargetController>, Vec<TargetSession>) {
+    discover_runtime_targets(renderer, client, events, deadline, native_live)
 }
 
 /// Validate configured plugins and build the renderer manager before any Codex
@@ -1816,6 +1906,7 @@ mod tests {
             client.clone(),
             events,
             Duration::from_secs(1),
+            || true,
         );
         assert!(targets.is_none());
         assert!(sessions.is_empty());
@@ -1890,6 +1981,7 @@ mod tests {
                 client.clone(),
                 events,
                 Duration::from_millis(500),
+                || child.wait(Duration::ZERO).unwrap().is_none(),
             );
             assert!(targets.is_some());
             assert_eq!(sessions.len(), 1);
@@ -1924,6 +2016,7 @@ mod tests {
                 client.clone(),
                 events,
                 Duration::from_millis(500),
+                || child.wait(Duration::ZERO).unwrap().is_none(),
             );
             assert!(targets.is_none());
             assert!(sessions.is_empty());

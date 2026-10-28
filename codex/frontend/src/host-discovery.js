@@ -11,6 +11,12 @@ export function* linkedNodes(first, next = value => value.next) {
   const seen = new Set();
   for(let value=first;value&&!seen.has(value);value=next(value)) { seen.add(value);yield value; }
 }
+export function classicNavigationItem(fiber) {
+  const props = fiber.memoizedProps;
+  return component(fiber.type) && ['sidebar-new-chat', 'sidebar-tasks', 'sidebar-plugins', 'sidebar-library'].includes(props?.animatedIcon) &&
+    props.label != null && props.icon != null && typeof props.onClick === 'function' &&
+    ['sidebar-item', 'animatedIcon', 'isActive'].every(marker => componentSource(fiber.type).includes(marker));
+}
 export function hostFibers() {
   const root = document.getElementById('root');
   const key = root && Object.keys(root).find(key => key.startsWith('__reactContainer$'));
@@ -19,7 +25,11 @@ export function hostFibers() {
   // Inspect that ownership chain, not the rendered messages or other panes.
   const rails = root ? [...root.querySelectorAll?.('nav[data-app-navigation-rail="true"]') ?? []] : [];
   const landmarks = rails.length ? rails : root ? [...root.querySelectorAll?.('nav') ?? []].filter(nav =>
-    [...nav.querySelectorAll('button.sidebar-item')].some(button => !button.closest('[data-codlet-native-navigation]'))) : [];
+    [...nav.querySelectorAll('button.sidebar-item')].some(button => {
+      if (button.closest('nav') !== nav || button.closest('[data-codlet-native-navigation]')) return false;
+      const key = Object.keys(button).find(key => key.startsWith('__reactFiber$')), attached = key && button[key];
+      return [attached, attached?.alternate].some(start => [...linkedNodes(start, fiber => fiber.return)].some(classicNavigationItem));
+    })) : [];
   if (landmarks.length > 1) throw fail('desktop_host_drift', 'Native navigation ownership is ambiguous');
   if (landmarks.length === 1) {
     const landmark = landmarks[0], attachedKey = Object.keys(landmark).find(key => key.startsWith('__reactFiber$'));

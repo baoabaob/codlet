@@ -6,10 +6,31 @@ export const NATIVE_PERMISSION_FUNCTIONS = Object.freeze({
   toSettings: { label: 'permission wire settings', arity: 1, markers: ['activePermissionProfile','sandboxPolicy','permissions:'] },
   modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'] },
   profileMode: { label: 'built-in permission profile', arity: 2, markers: [':read-only',':workspace',':danger-full-access'] },
-  defaultMode: { label: 'default workspace mode', arity: 1, markers: ['isProjectless','requirements','granular','auto'] },
+  defaultMode: { label: 'default workspace mode', arity: 1, markers: ['isProjectless','requirements','granular','auto'], workspaceDefault: true },
   windowsMode: { label: 'Windows default permission mode', arity: 1, markers: ['defaultWorkspaceWriteMode','isWindowsSandboxRequired','read-only'] },
   cyberModel: { label: 'model confirmation classification', arity: 1, markers: ['toLowerCase','cyber','daybreak'], modelClassification: true },
+  agentState: { label: 'permission state hook', arity: 1, markers: ['shouldSendPermissionOverrides','setAgentModePreference','setPermissionProfileId','threadSandboxPolicy','getNonFullAccessFallbackMode'] },
 });
+
+const literal = node => node?.type === 'Literal' ? node.value : node?.type === 'TemplateLiteral' && !node.expressions.length ? node.quasis[0].value.cooked : undefined;
+
+function workspaceDefault(source) {
+  try {
+    const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),parameter=fn.params?.[0];
+    if(fn.async||fn.generator||fn.params.length!==1)return false;
+    const input=(node,name)=>parameter.type==='ObjectPattern'
+      ? parameter.properties.some(property=>property.type==='Property'&&!property.computed&&(property.key.name??literal(property.key))===name&&
+        property.value.type==='Identifier'&&node?.type==='Identifier'&&node.name===property.value.name)
+      : parameter.type==='Identifier'&&node?.type==='MemberExpression'&&!node.computed&&node.object.type==='Identifier'&&
+        node.object.name===parameter.name&&node.property.name===name;
+    const result=fn.body.type==='BlockStatement'&&fn.body.body.length===1&&fn.body.body[0].type==='ReturnStatement'?fn.body.body[0].argument:fn.body;
+    const test=result?.test,check=test?.right;
+    return result?.type==='ConditionalExpression'&&literal(result.consequent)==='granular'&&literal(result.alternate)==='auto'&&
+      test?.type==='LogicalExpression'&&test.operator==='&&'&&input(test.left,'isProjectless')&&
+      check?.type==='CallExpression'&&check.callee.type==='Identifier'&&check.arguments.length===2&&
+      literal(check.arguments[0])==='granular'&&input(check.arguments[1],'requirements');
+  }catch{return false;}
+}
 
 function modelClassification(source) {
   try {
@@ -32,5 +53,6 @@ export function matchesNativePermissionSource(source, arity, contract) {
   return (contract.arity == null || arity === contract.arity) &&
     (!contract.arities || contract.arities.includes(arity)) &&
     contract.markers.every(marker => source.includes(marker)) &&
+    (!contract.workspaceDefault||workspaceDefault(source)) &&
     (!contract.modelClassification||modelClassification(source));
 }

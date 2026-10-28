@@ -715,6 +715,24 @@ test('activity slots and native actions live outside the native tooltip trigger,
   owner.ctx.retire();assert.equal(f.document.querySelector('[data-codlet-workspace-action]'),null);assert.throws(()=>action.update({pressed:false}),{code:'workspace_retired'});
 });
 
+test('independent action registrations retry preparation and keep each successful handle on its original components',async t=>{
+  const f=fixture(t),N=native(f),owner=f.connect();let mode=0,loads=0,invoked=0;
+  const button=label=>props=>N.React.createElement('button',{...props,'data-component-owner':label});
+  const firstButton=button('first'),secondButton=button('second'),Tooltip=({children})=>children;
+  f.discovery.action=async()=>{loads++;if(!mode)throw Object.assign(new Error('No rail in current layout'),{code:'workspace_action_unavailable'});return{...N,Button:mode===1?firstButton:secondButton,Tooltip};};
+  const create=id=>owner.session.registerAction({id,label:id,icon:{paths:['M0 0 H24 V24 H0 Z']},onInvoke(){invoked++;}});
+  const failed=create('failed-before-rail');await assert.rejects(failed.ready,{code:'workspace_action_unavailable'});
+  mode=1;const first=create('first-action');await first.ready;
+  mode=2;const second=create('second-action');await second.ready;
+  first.update({pressed:true});await f.flush();
+  const firstControl=f.document.querySelector('[data-codlet-workspace-action="first-action"]'),secondControl=f.document.querySelector('[data-codlet-workspace-action="second-action"]');
+  assert.equal(firstControl.dataset.componentOwner,'first');assert.equal(secondControl.dataset.componentOwner,'second');
+  assert.equal(f.document.querySelector('[data-codlet-workspace-action="failed-before-rail"]'),null);
+  assert.equal(loads,3);assert.equal(invoked,0);firstControl.click();secondControl.click();assert.equal(invoked,2);
+  await assert.rejects(failed.ready,{code:'workspace_action_unavailable'});
+  owner.ctx.retire();assert.equal(f.document.querySelector('[data-codlet-workspace-action]'),null);
+});
+
 test('native actions wait for a missing activity toolbar, reuse their root after returning, and cancel pending readiness',async t=>{
   const f=fixture(t),N=native(f),owner=f.connect(),button=f.document.getElementById('activity'),toolbar=button.parentElement;
   N.Button=props=>N.React.createElement('button',props);N.Tooltip=({children})=>children;f.discovery.action=async()=>N;

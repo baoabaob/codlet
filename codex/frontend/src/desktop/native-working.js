@@ -41,6 +41,9 @@ export const WORKING_PROFILES=Object.freeze([WORKING_PROFILE,Object.freeze({
 }),Object.freeze({
   initial:'app-initial-438d1df57f70.js',shared:'app-shared-955d52676f9c.js',
   response:'hRn',pending:'pRt',publishing:'_E',publishingModule:'app-primary-844e405f2b90.js'
+}),Object.freeze({
+  initial:'app-initial-b0cd131b9dba.js',shared:'app-shared-624e1c099f95.js',
+  response:'oLn',pending:'pBt',publishing:'xE',publishingModule:'app-primary-8eba40dc50b2.js'
 })]);
 
 export function nativeWorkingState(response,pending,publishing){

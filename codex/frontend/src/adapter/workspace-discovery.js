@@ -144,7 +144,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       parts.draftKey = workspaceFunction(native, 'draftIdentity', true);
       return { ...parts, ...createNativeNavigation(signal, existing, dispatch, () => nativeNavigationScope(existing())) };
     },
-    action: async () => { const native=await getCommon();if(!native.RailButton||!native.RailTooltip)throw workspaceError('workspace_action_unavailable','Native toolbar button or tooltip is unavailable');return{...native,Button:native.RailButton,Tooltip:native.RailTooltip}; },
+    action: async () => { const native=await getCommon(),current=native.resolveNavigation?.()??native;if(!current.RailButton||!current.RailTooltip)throw workspaceError('workspace_action_unavailable','Native toolbar button or tooltip is unavailable');return{...native,...current,Button:current.RailButton,Tooltip:current.RailTooltip}; },
     transcript: () => cached('transcript',async () => {
       const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'local-conversation-thread');
       if (!urls.length) throw workspaceError('workspace_transcript_unavailable', 'Native transcript modules are missing');

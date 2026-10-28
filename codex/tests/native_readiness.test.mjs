@@ -45,3 +45,20 @@ test('workspace module discovery retries a cold base without importing unrelated
   assert.equal(action.Button,native.RailButton);assert.equal(bases,2);assert.equal(imports,2);
   assert.equal((await discovery.action()).Button,action.Button);assert.equal(imports,2);
 });
+
+test('action discovery reads the current mounted navigation contract after a classic-to-rail change',async t=>{
+  const previous={document:globalThis.document,location:globalThis.location};
+  globalThis.document={querySelectorAll:()=>[{href:'app://-/assets/app-initial-current.js'},{href:'app://-/assets/app-shared-current.js'}]};
+  globalThis.location={origin:'app://-',pathname:'/index.html'};
+  t.after(()=>Object.assign(globalThis,previous));
+  let current={},bases=0,imports=0;
+  const native={React:{},Client:{},resolveNavigation:()=>current};
+  const discovery=createWorkspaceDiscovery(async()=>{bases++;return native;},{load:async()=>{imports++;return{};}});
+  t.after(()=>discovery.dispose());
+  await assert.rejects(discovery.action(),{code:'workspace_action_unavailable'});
+  current={RailButton(){},RailTooltip(){}};
+  const first=await discovery.action();assert.equal(first.Button,current.RailButton);assert.equal(first.Tooltip,current.RailTooltip);
+  current={RailButton(){},RailTooltip(){}};
+  const second=await discovery.action();assert.equal(second.Button,current.RailButton);assert.notEqual(second.Button,first.Button);
+  assert.equal(bases,1);assert.equal(imports,2,'only layout discovery refreshes; imported Native modules remain cached');
+});

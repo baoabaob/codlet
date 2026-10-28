@@ -6,12 +6,14 @@ mod target;
 pub(crate) use client::host_renderer_vm_tests::VmPeer;
 
 pub(crate) use client::CdpRequest;
+pub(crate) use client::SessionRetirement;
 pub use client::{
     BoundedCdpEvents, CancelIoFailure, CdpClient, CdpEvent, CdpEventFilter, CdpEventStream,
     CdpResponse, ClientError, ClientSpawnError, ConnectionError, EventStreamError,
     QueuedCdpRequest, RemoteError, ShutdownError,
 };
 pub use framing::{FramingError, MAX_CDP_FRAME_BYTES, NulJsonDecoder, write_json_frame};
+pub(crate) use target::DiscoveryFailure;
 pub(crate) use target::is_main_renderer_url;
 pub use target::{
     MAIN_RENDERER_URL, TargetChange, TargetController, TargetError, TargetObservation,

@@ -8,11 +8,11 @@ function options(value,previous={pressed:false,disabled:false,shortcut:null}) {
   return next;
 }
 export function createWorkspaceActions({document,load,activity,check,report}) {
-  const records=new Set();let native,prepared,disposed=false;
-  function ensure(){return prepared??=Promise.resolve().then(load).then(value=>{if(disposed)throw workspaceError('workspace_retired','Native action provider retired');native=value;return value;});}
+  const records=new Set();let prepared,disposed=false;
+  function ensure(){if(!prepared){const pending=Promise.resolve().then(load).then(value=>{if(disposed)throw workspaceError('workspace_retired','Native action provider retired');return value;}).finally(()=>{if(prepared===pending)prepared=null;});prepared=pending;}return prepared;}
   function render(record) {
-    if(record.disposed||record.failed||!native)return;
-    const N=native,R=N.React,h=R.createElement,opts=record.options,placement=activityPlacement(activity());
+    if(record.disposed||record.failed||!record.native)return;
+    const N=record.native,R=N.React,h=R.createElement,opts=record.options,placement=activityPlacement(activity());
     if(!placement)return;
     check();record.live();
     const providers=providersFor(placement.button);
@@ -36,13 +36,13 @@ export function createWorkspaceActions({document,load,activity,check,report}) {
     if([...records].some(other=>other.owner===owner&&other.options.id===record.options.id))throw workspaceError('duplicate_action','Native action already registered');record.owner=owner;
     let resolve,reject;const ready=new Promise((yes,no)=>{resolve=yes;reject=no;});ready.catch(()=>{});record.resolve=resolve;record.reject=reject;record.fail=error=>{record.failed=true;reject(error);report(error);};
     record.container=document.createElement('span');record.container.dataset.codletWorkspaceOwned=owner;record.container.style.display='contents';records.add(record);
-    ensure().then(()=>{if(!record.disposed)attempt(record);},record.fail).catch(record.fail);
+    ensure().then(value=>{if(!record.disposed){record.native=value;attempt(record);}},record.fail).catch(record.fail);
     return Object.freeze({ready,
       update(partial){live();if(record.disposed)throw workspaceError('workspace_retired','Native action retired');if(partial?.id!=null&&partial.id!==record.options.id)throw workspaceError('invalid_argument','Native action identity cannot change');record.options=options(partial,record.options);record.dirty=true;queueMicrotask(()=>attempt(record));},
-      dispose(){if(record.disposed)return;record.disposed=true;records.delete(record);reject(workspaceError('workspace_retired','Native action retired before readiness'));if(record.root)native.DOM.flushSync(()=>record.root.unmount());record.container.remove();},
+      dispose(){if(record.disposed)return;record.disposed=true;records.delete(record);reject(workspaceError('workspace_retired','Native action retired before readiness'));if(record.root)record.native.DOM.flushSync(()=>record.root.unmount());record.container.remove();},
     });
   }
   return{register,
     displaced(mutations){return [...records].some(record=>!record.disposed&&mutations.some(mutation=>[...mutation.removedNodes].some(node=>node===record.container||node.contains?.(record.container)||node===record.button||node.contains?.(record.button))));},
-    reconcile(){if(native)for(const record of records)attempt(record);},dispose(){disposed=true;for(const record of records){record.disposed=true;record.reject(workspaceError('workspace_retired','Native action provider retired'));if(record.root)native.DOM.flushSync(()=>record.root.unmount());record.container.remove();}records.clear();}};
+    reconcile(){for(const record of records)attempt(record);},dispose(){disposed=true;for(const record of records){record.disposed=true;record.reject(workspaceError('workspace_retired','Native action provider retired'));if(record.root)record.native.DOM.flushSync(()=>record.root.unmount());record.container.remove();}records.clear();}};
 }

@@ -5,6 +5,25 @@
 
 use super::*;
 
+/// Proof belongs to one acknowledged session, not to absence from a map. A
+/// transport close releases ownership but never confirms a reusable connection.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionRetirement {
+    confirmed: Arc<AtomicBool>,
+}
+
+impl SessionRetirement {
+    pub(super) fn new() -> Self {
+        Self {
+            confirmed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn confirm_teardown(&self) {
+        self.confirmed.store(true, Ordering::Release);
+    }
+}
+
 pub(super) struct RetiringSession {
     target_id: String,
     live: Arc<AtomicBool>,
@@ -21,6 +40,60 @@ fn report(session: &str, owner: &RetiringSession) {
 }
 
 impl CdpClient {
+    pub(crate) fn session_retirement(
+        &self,
+        session: &str,
+        live: &Arc<AtomicBool>,
+    ) -> SessionRetirement {
+        let state = self
+            .inner
+            .runtime
+            .shared
+            .state
+            .lock()
+            .expect("CDP state poisoned");
+        state
+            .sessions
+            .get(session)
+            .filter(|tracked| {
+                tracked
+                    .live
+                    .upgrade()
+                    .is_some_and(|current| Arc::ptr_eq(&current, live))
+            })
+            .map(|tracked| tracked.retirement.clone())
+            // An unknown/replaced registration cannot grant a recovery proof.
+            .unwrap_or_else(SessionRetirement::new)
+    }
+
+    pub(crate) fn wait_for_session_retirements(
+        &self,
+        retirements: &[SessionRetirement],
+        expires_at: Instant,
+    ) -> bool {
+        let shared = &self.inner.runtime.shared;
+        let mut state = shared.state.lock().expect("CDP state poisoned");
+        loop {
+            if state.terminal.is_some() || retirements.is_empty() {
+                return false;
+            }
+            if retirements
+                .iter()
+                .all(|retirement| retirement.confirmed.load(Ordering::Acquire))
+            {
+                return true;
+            }
+            if Instant::now() >= expires_at {
+                return false;
+            }
+            state = shared
+                .activity
+                .wait_timeout(state, remaining(expires_at))
+                .expect("CDP state poisoned while waiting for session retirement")
+                .0;
+        }
+    }
+
     pub(crate) fn target_is_retiring(&self, target: &str) -> bool {
         let shared = &self.inner.runtime.shared;
         let mut state = shared.state.lock().expect("CDP state poisoned");
@@ -271,6 +344,11 @@ pub(super) fn response(
 }
 
 pub(super) fn ended(_shared: &Arc<Shared>, state: &mut State, session: &str, phase: &'static str) {
+    if phase != "connection_ended"
+        && let Some(tracked) = state.sessions.get(session)
+    {
+        tracked.retirement.confirm_teardown();
+    }
     if let Some(mut owner) = state.retiring_sessions.remove(session) {
         owner.live.store(false, Ordering::Release);
         owner.phase = phase;

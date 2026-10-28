@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createRequire} from 'node:module';
 import {createNativePermissionReader} from '../frontend/src/desktop/native-permissions.js';
+import {currentPermissionCache,permissionCachePlan,permissionPickerBindings} from '../frontend/src/adapter/native-permission-cache.js';
 const require=createRequire(new URL('../frontend/package.json',import.meta.url)),{JSDOM}=require('jsdom');
 
-function fixture(t){
+function fixture(t,agentState,bindings){
   const dom=new JSDOM('<div id="root"><div data-codex-composer-root><div contenteditable="true"></div><button data-composer-navigation-target="permissions">Native</button></div></div>');t.after(()=>dom.window.close());
   const document=dom.window.document,root=document.getElementById('root'),input=root.firstElementChild,editable=input.firstElementChild,button=input.lastElementChild;
   const brand=name=>({__scopeBrand:name,id:Symbol(name)}),native={composerScope:brand('ComposerScope'),ThreadScope:brand('ThreadScope'),RouteScope:brand('RouteScope')};
@@ -26,14 +27,160 @@ function fixture(t){
   const picker={type:Picker,return:inputFiber,memoizedProps:{conversationId:'thread-a',hostId:'local'},updateQueue:{memoCache:{data:[values]}}},trigger={stateNode:button,return:picker};provider.sibling=picker;picker.child=trigger;
   const conversation={cwd:'different-manager-cwd',latestThreadSettings:{approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite'}}};
   const calls=[],convert=(mode,roots,config)=>{calls.push({mode,roots,config});return{approvalPolicy:mode==='full-access'?'never':'on-request',sandboxPolicy:{type:mode==='full-access'?'dangerFullAccess':'workspaceWrite',writableRoots:roots},runtimeWorkspaceRoots:roots};};
-  const reader=createNativePermissionReader({document,manager:{getConversation:()=>conversation},native,
+  const reader=createNativePermissionReader({document,manager:{getConversation:()=>conversation},native,agentState,bindings,
     reduce:config=>({availableAgentModes:['read-only','auto','granular','full-access','custom'],canShowCustom:true}),convert,
     toSettings:value=>value.activePermissionProfile?{permissions:value.activePermissionProfile.id}:{sandboxPolicy:value.sandboxPolicy},
     modeFromPolicy:value=>value.approvalPolicy==='never'?'full-access':'auto',profileMode:(value,fallback)=>value===':workspace'?fallback:value===':danger-full-access'?'full-access':value===':read-only'?'read-only':null,
     defaultMode:()=> 'auto',windowsMode:({defaultWorkspaceWriteMode,isWindowsSandboxRequired})=>isWindowsSandboxRequired?'read-only':defaultWorkspaceWriteMode,
     cyberModel:value=>value.includes('cyber')||value.includes('daybreak')});
-  return{reader,values,config,agent,thread,model,windows,conversation,calls,fullItem,customItem,input,picker,button,editable,document};
+  return{reader,values,config,agent,thread,model,windows,conversation,calls,fullItem,customItem,input,picker,button,editable,document,nativeInput:{input,scope}};
 }
+
+function compilerSource(offset=0){
+  const a={inputs:[offset,offset+1],config:offset+2,sandbox:offset+3,mode:offset+4,profile:offset+5,override:offset+6,result:offset+7};
+  const v={mode:[offset+8,offset+9],profile:offset+10,review:offset+11,input:offset+12};
+  // These synthetic functions are never called. Their assignments exercise the
+  // same compiler dataflow as Native, with independently movable cache roles.
+  const AgentState=Function(`return function PermissionState(input){
+    let memo=(0,compiler.c)(9999),{conversationId,cwdOverride,hostId}=input,first,second;
+    first={conversationId,cwdOverride,hostId};memo[${a.inputs[0]}]=first;
+    second={conversationId,hostId,cwdOverride};memo[${a.inputs[1]}]=second;
+    let config=readConfig(first),{threadMode,threadSandboxPolicy,threadPermissionProfileId}=readThread(conversationId);
+    let review=readModel(),override=readOverride();memo[${a.config}]=config.resolvedConfig;memo[${a.sandbox}]=threadSandboxPolicy;
+    memo[${a.mode}]=threadMode;memo[${a.profile}]=threadPermissionProfileId;memo[${a.override}]=override;
+    if(early&&!review)return{agentMode:threadMode,permissionProfileId:threadPermissionProfileId,isAutoReviewRequiredForSelectedModel:review,shouldSendPermissionOverrides:override,setAgentModePreference(){},setPermissionProfileId(){},getNonFullAccessFallbackMode(){}};
+    let result;return changed?(result={agentMode:otherMode,permissionProfileId:otherProfile,isAutoReviewRequiredForSelectedModel:review,shouldSendPermissionOverrides:otherOverride},memo[${a.result}]=result):result=memo[${a.result}],result;
+  }`)();
+  const Picker=Function(`return function PermissionPicker(props){
+    let memo=(0,compiler.c)(7777);const {permissionProfilesOverride,conversationId,hostId,cwdOverride,disableDefaultPermissions,disableCustomPermissions}=props;let args;
+    args={conversationId,hostId,cwdOverride};memo[${v.input}]=args;
+    const {agentMode,permissionProfileId,isAutoReviewRequiredForSelectedModel,shouldSendPermissionOverrides,setAgentMode,setPermissionProfileId}=readState(args);
+    const {canSelectGuardianMode:guardian}=readGuardian();
+    const mode=disableDefaultPermissions&&disableCustomPermissions&&agentMode!=='full-access'&&guardian?'guardian-approvals':agentMode;
+    memo[${v.mode[0]}]=mode;memo[${v.mode[1]}]=mode;memo[${v.profile}]=permissionProfileId;memo[${v.review}]=isAutoReviewRequiredForSelectedModel;return null;
+  }`)();
+  const url='app://-/assets/permissions-mode-dropdown-synthetic.js',initial='app://-/assets/app-initial-synthetic.js';
+  const module=`import {state as readState} from './app-initial-synthetic.js';${Picker.toString()}`;
+  const bindings=permissionPickerBindings(module,url,new Map([[initial,{state:AgentState}]]),AgentState);
+  return{AgentState,Picker,a,v,bindings,module,url,initial};
+}
+function uncachedFixture(t,offset=0){
+  const source=compilerSource(offset),f=fixture(t,source.AgentState,source.bindings),sentinel=Symbol.for('react.memo_cache_sentinel');
+  f.values.splice(f.values.indexOf(f.agent),1);f.thread.threadMode='custom';f.thread.threadSandboxPolicy={type:'readOnly'};
+  const args={conversationId:'thread-a',hostId:'local',cwdOverride:undefined},agentFrame=Array(offset+8).fill(sentinel),viewFrame=Array(offset+12).fill(sentinel);
+  for(const index of source.a.inputs)agentFrame[index]=args;
+  agentFrame[source.a.config]=f.config.resolvedConfig;agentFrame[source.a.sandbox]=f.thread.threadSandboxPolicy;
+  agentFrame[source.a.mode]=f.thread.threadMode;agentFrame[source.a.profile]=null;agentFrame[source.a.override]=false;
+  for(const index of source.v.mode)viewFrame[index]='custom';viewFrame[source.v.profile]=null;viewFrame[source.v.review]=false;viewFrame[source.v.input]=args;
+  f.picker.type=source.Picker;f.picker.updateQueue.memoCache.data=[f.values,viewFrame,agentFrame];
+  return{...f,...source,args,agentFrame,viewFrame,sentinel};
+}
+
+test('a loaded-thread compiler branch can return permission state without retaining its result object',t=>{
+  const f=uncachedFixture(t),cache=currentPermissionCache(f.document,f.nativeInput,{agentState:f.AgentState,bindings:f.bindings});
+  assert.equal(cache.agentProvenance,'uncached-return');assert.deepEqual(cache.agents,[{agentMode:'custom',permissionProfileId:null,isAutoReviewRequiredForSelectedModel:false,shouldSendPermissionOverrides:false}]);
+  f.fullItem.props.disabled=true;
+  const snapshot=f.reader.read('thread-a');assert.equal(snapshot.phase,'ready');assert.deepEqual(snapshot.selection,{kind:'server-default'});
+  assert.equal(snapshot.options.find(option=>option.selection.mode==='full-access').enabled,false);
+  assert.throws(()=>f.reader.convert('thread-a',{kind:'agent-mode',mode:'full-access'}),{code:'permissions_unavailable'});
+});
+
+test('compiler cache roles follow lexical assignments after relocation without a cache-length profile',t=>{
+  const f=uncachedFixture(t,311),plan=permissionCachePlan(f.Picker.toString(),f.AgentState.toString(),{callee:'readState'});
+  assert.equal(plan.resultSlot,f.a.result);assert.deepEqual(plan.viewMode,f.v.mode);
+  f.picker.updateQueue.memoCache.data.unshift([],[]);f.agentFrame.length=12000;
+  assert.equal(f.reader.read('thread-a').phase,'ready');
+  const changed=f.AgentState.toString().replace('if(early&&!review)','if(early||!review)');
+  assert.equal(permissionCachePlan(f.Picker.toString(),changed,{callee:'readState'}),null,'an unproven model guard cannot authorize an early-return projection');
+});
+
+test('permission cache projections require the exact current Native input and config/sandbox objects',t=>{
+  for(const mutate of [f=>{f.args.conversationId='foreign-thread';},f=>{f.agentFrame[f.a.config]={...f.config.resolvedConfig};},f=>{f.agentFrame[f.a.sandbox]={...f.thread.threadSandboxPolicy};},f=>{f.viewFrame[f.v.review]=true;},f=>{f.picker.updateQueue.memoCache.data.push([...f.agentFrame]);}]){
+    const f=uncachedFixture(t);mutate(f);assert.equal(f.reader.read('thread-a').phase,'unsupported');
+  }
+  const f=uncachedFixture(t);f.input.__reactFiber$synthetic.child=null;
+  assert.throws(()=>currentPermissionCache(f.document,f.nativeInput,{agentState:f.AgentState,bindings:f.bindings}),{code:'permissions_unsupported'});
+});
+
+test('same-shape permission consumers must import the actual loaded Native hook object',t=>{
+  const f=uncachedFixture(t),foreign=function ForeignState(){};
+  assert.equal(f.bindings.size,1);
+  assert.equal(permissionPickerBindings(f.module,f.url,new Map([[f.initial,{state:foreign}]]),f.AgentState).size,0);
+  assert.equal(permissionPickerBindings(f.module.replace('state as readState','foreign as readState'),f.url,new Map([[f.initial,{state:f.AgentState,foreign}]]),f.AgentState).size,0);
+  assert.equal(permissionCachePlan(f.Picker.toString(),f.AgentState.toString(),{callee:'foreignState'}),null);
+  f.bindings.clear();assert.equal(f.reader.read('thread-a').phase,'unsupported');
+});
+
+test('unresolved permission field identities and changed return flow are not equivalent bindings',()=>{
+  const f=compilerSource(),picker=f.Picker.toString(),source=f.AgentState.toString(),plan=text=>permissionCachePlan(picker,text,{callee:'readState'});
+  assert.ok(plan(source));
+  for(const changed of [
+    source.replaceAll('!review','!foreign.review').replaceAll('isAutoReviewRequiredForSelectedModel:review','isAutoReviewRequiredForSelectedModel:foreign.review'),
+    source.replaceAll('!review','!false').replaceAll('isAutoReviewRequiredForSelectedModel:review','isAutoReviewRequiredForSelectedModel:false'),
+    source.replace('agentMode:threadMode','agentMode:null'),
+    source.replace('{threadMode,threadSandboxPolicy','{threadMode:threadMode=null,threadSandboxPolicy').replace('agentMode:threadMode','agentMode:null'),
+    source.replace('permissionProfileId:threadPermissionProfileId','permissionProfileId:foreign.profile'),
+    source.replace('shouldSendPermissionOverrides:override','shouldSendPermissionOverrides:foreign.override'),
+    source.replace('result=memo[7],result','result=memo[6],result'),
+    source.replace('result=memo[7],result','result=memo[7],foreign'),
+  ])assert.equal(plan(changed),null);
+  assert.equal(permissionCachePlan(picker.replace('readState(args)','readState(null)'),source,{callee:'readState'}),null);
+  assert.equal(permissionCachePlan(picker.replace('readState(args)','foreign.readState(args)'),source,{callee:'readState'}),null);
+  assert.equal(permissionCachePlan(picker.replace('const mode=','disableDefaultPermissions=true;const mode='),source,{callee:'readState'}),null);
+});
+
+test('picker projections prove the raw mode branch and its current input object',t=>{
+  const f=uncachedFixture(t);
+  const changed=f.Picker.toString().replace('disableDefaultPermissions&&disableCustomPermissions','disableDefaultPermissions||disableCustomPermissions');
+  assert.equal(permissionCachePlan(changed,f.AgentState.toString(),{callee:'readState'}),null);
+  f.viewFrame[f.v.input]={...f.args,conversationId:'old-thread'};assert.equal(f.reader.read('thread-a').phase,'unsupported');
+  f.viewFrame[f.v.input]=f.args;f.picker.memoizedProps.disableDefaultPermissions=null;assert.equal(f.reader.read('thread-a').phase,'unsupported');
+});
+
+test('a stale cached branch cannot supply a different Native permission override decision',t=>{
+  const f=uncachedFixture(t),cached={agentMode:'custom',permissionProfileId:null,isAutoReviewRequiredForSelectedModel:false,shouldSendPermissionOverrides:true};
+  f.agentFrame[f.a.result]=cached;f.values.push(cached);
+  assert.equal(f.reader.read('thread-a').phase,'unsupported');
+  cached.shouldSendPermissionOverrides=false;assert.equal(f.reader.read('thread-a').phase,'ready');
+  cached.agentMode='auto';assert.equal(f.reader.read('thread-a').phase,'ready','the current picker disproves the stale cached branch');
+  f.viewFrame[f.v.mode[0]]=f.viewFrame[f.v.mode[1]]='auto';assert.deepEqual(f.reader.read('thread-a').selection,{kind:'server-default'});
+  cached.shouldSendPermissionOverrides=true;assert.equal(f.reader.read('thread-a').selection.mode,'auto');
+});
+
+test('the proven cached return retains Native model-review restrictions',t=>{
+  const f=uncachedFixture(t),cached={agentMode:'custom',permissionProfileId:null,isAutoReviewRequiredForSelectedModel:true,shouldSendPermissionOverrides:false};
+  f.agentFrame[f.a.result]=cached;f.values.push(cached);f.viewFrame[f.v.review]=true;
+  const cache=currentPermissionCache(f.document,f.nativeInput,{agentState:f.AgentState,bindings:f.bindings});
+  assert.equal(cache.agentProvenance,'memoized-return');assert.equal(cache.agents[0],cached);
+  const snapshot=f.reader.read('thread-a');assert.equal(snapshot.phase,'ready');assert.equal(snapshot.options.every(option=>!option.enabled),true);
+  Object.assign(f.picker.memoizedProps,{disableDefaultPermissions:true,disableCustomPermissions:true});
+  for(const index of f.v.mode)f.viewFrame[index]='guardian-approvals';
+  assert.equal(f.reader.read('thread-a').phase,'ready');assert.equal(f.reader.read('thread-a').options.every(option=>!option.enabled),true);
+});
+
+test('Native boolean disable gates retain cached permission reads and their actual guardian display mapping',t=>{
+  for(const [disableDefaultPermissions,disableCustomPermissions,display] of [[true,true,'guardian-approvals'],[true,false,'custom'],[false,true,'custom'],[true,undefined,'custom'],[undefined,true,'custom']]){
+    const f=uncachedFixture(t),cached={agentMode:'custom',permissionProfileId:null,isAutoReviewRequiredForSelectedModel:false,shouldSendPermissionOverrides:false};
+    Object.assign(f.picker.memoizedProps,{disableDefaultPermissions,disableCustomPermissions});
+    f.agentFrame[f.a.result]=cached;for(const index of f.v.mode)f.viewFrame[index]=display;
+    f.fullItem.props.disabled=true;f.customItem.props.disabled=true;
+    const cache=currentPermissionCache(f.document,f.nativeInput,{agentState:f.AgentState,bindings:f.bindings});
+    assert.equal(cache.agentProvenance,'memoized-return');assert.equal(cache.agents[0],cached);
+    const snapshot=f.reader.read('thread-a');assert.equal(snapshot.phase,'ready');assert.deepEqual(snapshot.selection,{kind:'server-default'});
+    assert.equal(snapshot.options.find(option=>option.selection.mode==='full-access').enabled,false);
+    if(disableDefaultPermissions)assert.equal(snapshot.options.find(option=>option.selection.mode==='auto').enabled,false);
+  }
+});
+
+test('guardian display mapping cannot hide distinct possible raw permission states or override decisions',t=>{
+  const f=uncachedFixture(t);Object.assign(f.picker.memoizedProps,{disableDefaultPermissions:true,disableCustomPermissions:true});
+  for(const index of f.v.mode)f.viewFrame[index]='guardian-approvals';
+  f.agentFrame[f.a.result]={agentMode:'custom',permissionProfileId:null,isAutoReviewRequiredForSelectedModel:false,shouldSendPermissionOverrides:true};
+  assert.equal(f.reader.read('thread-a').phase,'unsupported','the display mapping does not resolve a conflicting override');
+  f.agentFrame[f.a.result].shouldSendPermissionOverrides=false;f.agentFrame[f.a.result].agentMode='auto';
+  assert.equal(f.reader.read('thread-a').phase,'unsupported','different raw modes may map to the same guardian display');
+  f.agentFrame[f.a.result].agentMode='full-access';assert.equal(f.reader.read('thread-a').phase,'ready','full access cannot take the guardian display branch, so the current early result is unique');
+});
 
 test('committed Native permission reads accept equivalent hook inputs and use Native thread roots rather than manager cwd',t=>{
   const f=fixture(t),snapshot=f.reader.read('thread-a');assert.equal(snapshot.phase,'ready');assert.deepEqual(snapshot.options.map(value=>value.selection.mode),['auto','full-access','custom']);

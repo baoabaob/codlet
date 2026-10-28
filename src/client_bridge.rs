@@ -19,6 +19,29 @@ fn error(code: &'static str) -> HostError {
         "The owned client bridge could not complete its bounded operation",
     )
 }
+
+fn activation_failure_diagnostic(failure: &HostError, result: &Value) -> String {
+    let source_error = match result.get("sourceError") {
+        None | Some(Value::Null) => "absent",
+        Some(Value::String(code))
+            if !code.is_empty()
+                && code.len() <= 80
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_') =>
+        {
+            code
+        }
+        Some(_) => "redacted_invalid_code",
+    };
+    format!("{}; sourceError={source_error}", failure.message)
+}
+
+fn report_activation_failure(failure: &HostError, result: &Value) {
+    let diagnostic = activation_failure_diagnostic(failure, result);
+    crate::runtime_log::error("client_source_activation_invalid", &diagnostic);
+    eprintln!("client-source-activation-invalid: {diagnostic}");
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Endpoint {
@@ -1069,7 +1092,8 @@ impl ClientSourceRuntime {
             let activation = crate::client_launch::validate_client_source_activation(
                 &observed["activation"],
                 &self.0.configuration["source"],
-            )?;
+            )
+            .inspect_err(|failure| report_activation_failure(failure, &observed))?;
             if state.provider.is_none() && (activation.installed || activation.pending) {
                 return Err(error("client_bridge_protocol"));
             }
@@ -1115,7 +1139,8 @@ impl ClientSourceRuntime {
         let activation = crate::client_launch::validate_client_source_activation(
             &result["activation"],
             &self.0.configuration["source"],
-        )?;
+        )
+        .inspect_err(|failure| report_activation_failure(failure, &result))?;
         if selected.is_none() && (activation.installed || activation.pending) {
             return Err(error("client_bridge_protocol"));
         }

@@ -2,7 +2,7 @@ import { createCodletIcons } from '../icons.js';
 import { CLIENT_PROFILES, clientProfile } from '../../../compatibility/client-profiles.js';
 import { COMPOSER_CAPABILITY, createComposerActions, composerLease } from './composer-action.js';
 import { reviewedNavigator } from '../native-navigation.js';
-import { COMPOSER_PROFILE, discoverNative, notificationBadge } from './discovery.js';
+import { COMPOSER_PROFILE, discoverNative, nativeNavigation, notificationBadge } from './discovery.js';
 import { desktopDocument, hostFibers, currentElementAncestry } from '../host-discovery.js';
 import { createWorkspace } from './workspace.js';
 
@@ -108,6 +108,9 @@ function nativePlacement(SidebarItem, SidebarGroup) {
     }
   }
   candidates.sort((a, b) => a.priority - b.priority);
+  if (candidates.length && candidates.some(candidate => candidate.priority === candidates[0].priority &&
+      (candidate.parent !== candidates[0].parent || candidate.anchor !== candidates[0].anchor)))
+    throw fail('ui_host_drift', 'Native classic navigation placement is ambiguous');
   return candidates[0] ?? null;
 }
 
@@ -164,20 +167,22 @@ export function createNavigation(context, native, host, withComposer = true) {
       dispose() { alive = false; actions.dispose(); },
     };
   }
-  const { React, DOM, Client, SidebarItem, Header, HeaderToolbar, RailButton, RailTooltip } = native;
+  const { React, DOM, Client, Header, HeaderToolbar } = native;
   const { Cube, CodeSquareSlash, PluginPuzzle } = createCodletIcons(React);
   const icons = { Cube, CodeSquareSlash, Codlet: PluginPuzzle };
   const entries = new Map(), h = React.createElement;
   const composerActions = createComposerActions(context, host, withComposer ? native.composerActionProfile : null);
-  let alive = true, navContainer, navRoot, pending = false;
+  let alive = true, navContainer, navRoot, pending = false, navigationContract = native, navigationFailure;
   const hostLive = () => document.getElementById('root') === host.rootNode && host.rootNode.isConnected;
   const check = () => {
     const current = alive ? locateHost() : null;
     if (!current || current.tree !== host.tree || current.navigator !== host.navigator)
       throw fail('ui_host_drift', 'Desktop route ownership changed; reload the UI adapter');
+    if (navigationFailure && navigationFailure.code !== 'ui_host_pending') throw navigationFailure;
   };
   const renderNav = () => {
     if (!alive || !navRoot) return;
+    const { SidebarItem, RailButton, RailTooltip } = navigationContract;
     navRoot.render(h(React.Fragment, null, ...[...entries.values()].map(entry => {
       const onClick = () => { try { check(); if (!entry.active) { entry.previous = { ...host.navigator.location }; host.navigator.push(entry.path); } }
         catch (error) { context.reportDiagnostic?.({ code: error.code, message: error.message }); } };
@@ -212,15 +217,30 @@ export function createNavigation(context, native, host, withComposer = true) {
     if (!alive) return;
     if (!hostLive()) { navContainer?.remove(); return; }
     for (const entry of [...entries.values()]) if (!entry.lease.isConnected) retire(entry);
-    const placement = RailButton ? railPlacement(native.SidebarGroup) : nativePlacement(SidebarItem, native.SidebarGroup);
+    let placement, next, changed = false;
+    try {
+      next = native.resolveNavigation?.() ?? native;
+      changed = ['SidebarItem', 'SidebarGroup', 'RailButton', 'RailTooltip'].some(key => next[key] !== navigationContract[key]);
+      placement = next.RailButton ? railPlacement(next.SidebarGroup) : nativePlacement(next.SidebarItem, next.SidebarGroup);
+      navigationFailure = null;
+    } catch (error) {
+      navContainer?.remove();
+      if (error.code !== 'ui_host_pending' && (navigationFailure?.code !== error.code || navigationFailure?.message !== error.message))
+        context.reportDiagnostic?.({ code: error.code || 'ui_unavailable', message: error.message });
+      navigationFailure = error;
+      return;
+    }
     if (!placement || !entries.size) { navContainer?.remove(); return; }
+    navigationContract = next;
+    const rail = !!navigationContract.RailButton;
     if (!navContainer) {
       navContainer = document.createElement('div'); navContainer.dataset.codletNativeNavigation = '1';
       // Let the native rail own spacing, scrolling and sizing, including when
       // several plugins register pages. Legacy sidebars keep their row spacing.
-      navContainer.className = RailButton ? 'contents' : 'flex flex-col gap-px';
+      navContainer.className = rail ? 'contents' : 'flex flex-col gap-px';
       navRoot = Client.createRoot(navContainer); renderNav();
     }
+    if (changed) { navContainer.className = rail ? 'contents' : 'flex flex-col gap-px'; renderNav(); }
     if (navContainer.parentElement !== placement.parent || navContainer.previousElementSibling !== placement.anchor)
       placement.parent.insertBefore(navContainer, placement.anchor.nextSibling);
   };
@@ -346,6 +366,7 @@ async function loadNative() {
     if (typeof native.RailButton !== 'function' || typeof native.RailTooltip !== 'function' || !native.SidebarGroup)
       throw fail('ui_build_drift', 'The reviewed native navigation rail changed');
   }
+  if (native.SidebarGroup) native.resolveNavigation = () => nativeNavigation(native.React, [react, dom, client, primary, initial]);
   native.toolbarInset = page.toolbarInset;
   native.newTaskOptions = page.newTaskOptions ?? {};
   // Same lazy initializer and hook used by the official Create plugin/skill

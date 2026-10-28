@@ -8,6 +8,8 @@ function LegacyTooltip(props) { return { tooltipContent: props.tooltipContent, d
 function ContentTooltip({ content, contentClassName, enabledWhen, forceOpen }) {
   return { renderTooltip: () => ({ content, contentClassName, enabledWhen, forceOpen, delayDuration: 150, disableHoverableContent: true }) };
 }
+function DefaultsProvider({ side, children }) { return { side, children }; }
+ContentTooltip.DefaultsProvider = DefaultsProvider;
 const factorySource = `
 const react=cjs(e=>{e.createElement=()=>{};e.useState=()=>{};e.useEffect=()=>{};e.Fragment=Symbol();e.version='x';});
 const wrap=cjs((e,m)=>{m.exports=react()});
@@ -52,6 +54,25 @@ test('mounted content tooltip receives the existing navigation and action labels
     cloneCustomTrigger: false, closeOnTriggerClick: true, variant: 'tooltip', children: child, onClick });
   assert.equal(rendered.type, ContentTooltip);
   assert.deepEqual(rendered.props, { content: 'Split', openDelay: 240, side: 'bottom', shortcut: 'Ctrl+S', disabled: false, children: child, onClick });
+});
+test('a rail tooltip inherits its side from its own current Native defaults provider', async t => {
+  const f = fixture(t, ContentTooltip, 'content');
+  delete f.tooltip.memoizedProps.side;
+  const defaults = { type: DefaultsProvider, memoizedProps: { side: 'right' }, child: f.group, return: f.current };
+  f.current.child = defaults; f.group.return = defaults;
+  const native = await f.discover();
+  assert.equal(native.RailButton, RailButton);
+  assert.equal(native.resolveNavigation().RailTooltip, native.RailTooltip, 'reconciliation preserves the adapted component identity');
+  f.tooltip.memoizedProps.side = 'left';
+  assert.throws(native.resolveNavigation, { code: 'ui_host_drift' }, 'an explicit side overrides inherited defaults');
+});
+test('unrelated or detached tooltip defaults cannot satisfy the mounted rail contract', async t => {
+  const f = fixture(t, ContentTooltip, 'content'); delete f.tooltip.memoizedProps.side;
+  const defaults = { type() {}, memoizedProps: { side: 'right' }, child: f.group, return: f.current };
+  f.current.child = defaults; f.group.return = defaults;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+  defaults.type = DefaultsProvider; f.current.child = f.group;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
 });
 test('unmounted or unexported tooltip candidates cannot satisfy native discovery', async t => {
   const f = fixture(t, ContentTooltip, 'content');

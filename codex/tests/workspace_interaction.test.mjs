@@ -4,11 +4,16 @@ import { createRequire } from 'node:module';
 import { resolveThreadInteraction, hasBlockingOverlay } from '../frontend/src/adapter/workspace-dom.js';
 const require = createRequire(new URL('../frontend/package.json', import.meta.url)), { JSDOM } = require('jsdom');
 test('semantic sidebar interactions retain row actions and reject embedded controls and owned surfaces', t => {
-  const dom = new JSDOM('<nav><button id="row"><span data-thread-title><span id="title">Task</span><button id="menu">Menu</button></span></button></nav>');
+  const dom = new JSDOM('<div id="root"><nav><button id="row"><span data-thread-title><span id="title">Task</span></span></button></nav></div>');
   t.after(() => dom.window.close());
   const document = dom.window.document, title = document.getElementById('title'), marker = title.closest('[data-thread-title]');
-  marker.__reactFiber$fixture = { memoizedProps: { thread: { id: 'thread-owned-123', hostId: 'local' } }, return: null };
+  const root = document.getElementById('root'), current = {}, row = { memoizedProps: { thread: { id: 'thread-owned-123', hostId: 'local' } }, return: current };
+  root.__reactContainer$fixture = { stateNode: { current } }; current.child = row;
+  marker.__reactFiber$fixture = { stateNode: marker, return: row }; row.child = marker.__reactFiber$fixture;
   assert.deepEqual(resolveThreadInteraction(document, title), { threadId: 'thread-owned-123', hostId: 'local' });
+  current.child = null;
+  assert.equal(resolveThreadInteraction(document, title), null, 'a stale return link cannot authorize a detached Native row');
+  current.child = row;
   const menu = document.createElement('button'); menu.textContent = 'Menu'; marker.appendChild(menu);
   assert.equal(resolveThreadInteraction(document, menu), null);
   marker.parentElement.dataset.codletWorkspaceOwned = 'dev.consumer:1';

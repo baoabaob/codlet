@@ -1,7 +1,7 @@
 import {loadedAsset,uniqueModuleExport,componentSource} from '../host-discovery.js';
 import {NATIVE_PERMISSION_FUNCTIONS,matchesNativePermissionSource} from './permission-contracts.js';
 import {nativeMainInput,nativeInputBinding,workspaceError} from '../adapter/workspace-dom.js';
-import {currentPermissionCache,currentWindowsRequirement} from '../adapter/native-permission-cache.js';
+import {currentPermissionCache,currentWindowsRequirement,permissionPickerBindings} from '../adapter/native-permission-cache.js';
 import {OWNED} from '../adapter/workspace-dom.js';
 
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -9,16 +9,26 @@ const modes=['read-only','auto','granular','guardian-approvals','full-access','c
 const labels={'read-only':['composer.permissionsDropdown.readOnly','Read only'],auto:['composer.permissionsDropdown.default.approvalOptionLabel','Ask for approval'],granular:['composer.permissionsDropdown.granular','Granular permissions'],
   'guardian-approvals':['composer.permissionsDropdown.guardianApproval.optionLabel','Approve for me'],'full-access':['composer.permissionsDropdown.fullAccess.optionLabel','Full access'],custom:['composer.permissionsDropdown.custom.optionLabel','Custom (config.toml)']};
 
-export async function loadNativePermissions({document,manager,load=url=>import(url),asset=loadedAsset}) {
+export async function loadNativePermissions({document,manager,load=url=>import(url),asset=loadedAsset,read=async url=>{
+  const response=await fetch(url,{credentials:'omit'});
+  if(!response.ok||response.url!==url)throw workspaceError('permissions_unsupported','Unable to read the loaded Native permission module');
+  return response.text();
+}}) {
   const urls=[asset('shared'),asset('initial')],modules=new Map(await Promise.all(urls.map(async url=>[url,await load(url)])));
   const brand=name=>uniqueModuleExport(modules,value=>value?.__scopeBrand===name&&typeof value.id==='symbol',name);
   const native={composerScope:brand('ComposerScope'),ThreadScope:brand('ThreadScope'),RouteScope:brand('RouteScope')};
   const functions=Object.fromEntries(Object.entries(NATIVE_PERMISSION_FUNCTIONS).map(([name,contract])=>[name,
     uniqueModuleExport(modules,value=>typeof value==='function'&&matchesNativePermissionSource(componentSource(value),value.length,contract),'Native '+contract.label)]));
-  return createNativePermissionReader({document,manager,native,...functions});
+  const initial=urls[1],graph=await read(initial),references=[...new Set([...graph.matchAll(/["'`]((?:\.\/)?permissions-mode-dropdown-[A-Za-z0-9_-]+\.js)["'`]/g)].map(match=>new URL(match[1],initial).href))];
+  if(references.length!==1||!/^app:\/\/-\/assets\/permissions-mode-dropdown-[A-Za-z0-9_-]+\.js$/.test(references[0]))throw workspaceError('permissions_unsupported','A unique Native permission picker module is required');
+  // Reading the lazy module establishes its import graph without executing its
+  // initializer or invoking a Native hook.
+  const bindings=permissionPickerBindings(await read(references[0]),references[0],modules,functions.agentState);
+  if(!bindings.size)throw workspaceError('permissions_unsupported','Native permission picker import is unavailable');
+  return createNativePermissionReader({document,manager,native,...functions,bindings});
 }
 
-export function createNativePermissionReader({document,manager,native,reduce,convert,toSettings,modeFromPolicy,profileMode,defaultMode,windowsMode,cyberModel}) {
+export function createNativePermissionReader({document,manager,native,reduce,convert,toSettings,modeFromPolicy,profileMode,defaultMode,windowsMode,cyberModel,agentState,bindings}) {
   const listeners=new Set();let observer,watched;
   const track=(id,trigger)=>{
     if(!listeners.size||!document.defaultView.MutationObserver)return;
@@ -38,7 +48,7 @@ export function createNativePermissionReader({document,manager,native,reduce,con
   const inputs=id=>{
     const input=nativeMainInput(document,native),binding=input&&nativeInputBinding(input,native);
     if(!binding||binding.threadId!==id)throw workspaceError('permissions_not_selected','Native permission input is not confirmed for this conversation');
-    const cache=currentPermissionCache(document,input);
+    const cache=currentPermissionCache(document,input,{agentState,bindings});
     track(id,cache.trigger);
     if(!cache.configs.length||cache.agents.length!==1||cache.threads.length!==1)throw workspaceError('permissions_unsupported','Native permission cache is incomplete or ambiguous');
     const agent=cache.agents[0],thread=cache.threads[0],conversation=manager.getConversation(id),settings=conversation?.latestThreadSettings;

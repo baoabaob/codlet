@@ -25,7 +25,7 @@ export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
   settingsRow: { label: 'settings row', markers: ['labelSizing', 'controlSizing', 'description', 'control'], capabilities: ['shortcuts'] },
   commandHook: { label: 'command hook', markers: ['contextHandler', 'keyboardHandler', 'menuItem', 'useEffect'], capabilities: ['shortcuts'] },
   keyboardDispatch: { label: 'keyboard command dispatch', arity: 3, markers: ['keyboard_shortcut'], capabilities: ['shortcuts'] },
-  shortcutBindings: { label: 'effective shortcut bindings', markers: ['keymapState', 'accelerator:', 'label:', 'macOS', 'chatgpt'], capabilities: ['shortcuts'] },
+  shortcutBindings: { label: 'effective shortcut bindings', markers: ['keymapState', 'accelerator:', 'label:', 'macOS', 'chatgpt'], shortcutBindings: true, capabilities: ['shortcuts'] },
   viewportSetOpen: { label: 'viewport open action', markers: ['window-resize', 'closeReason', '.stop()', 'animate'], capabilities: ['viewport'] },
   viewportPersistence: { label: 'viewport persistence action', arity: 1, markers: ['mainContentWidth', 'storageKey', 'widthMode', 'width'], capabilities: ['viewport'] },
 });
@@ -35,7 +35,27 @@ export function matchesWorkspaceFunction(source, arity, contract, inputPropertie
   return (!contract.arity && contract.arity !== 0 || arity === contract.arity) &&
     contract.markers.every(marker => source.includes(marker)) &&
     (!contract.localNavigationDelegate || isNativeLocalNavigationDelegate(source)) &&
+    (!contract.shortcutBindings || isNativeShortcutBindings(source)) &&
     (!contract.inputProperties || contract.inputProperties.every(name => inputProperties.includes(name)));
+}
+
+// The binding helper consumes command/keymap/platform arguments and maps each
+// accelerator to a label. Settings rows consume a props object and call it;
+// their nested shortcut callbacks must not be mistaken for this responsibility.
+function isNativeShortcutBindings(source){
+  try{
+    const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),parameters=fn.params??[];
+    if(fn.async||fn.generator||parameters.length<3||parameters.length>4||parameters.slice(0,3).some(value=>value.type!=='Identifier'))return false;
+    if(parameters.length===4&&parameters[3].type!=='AssignmentPattern')return false;
+    const body=fn.body?.body,call=body?.length===1&&body[0].type==='ReturnStatement'?body[0].argument:fn.body;
+    if(call?.type!=='CallExpression'||call.callee.type!=='MemberExpression'||call.callee.computed||call.callee.property.name!=='map'||call.arguments.length!==1)return false;
+    const mapper=call.arguments[0],parameter=mapper.params?.[0],value=mapper.body;
+    if(mapper.type!=='ArrowFunctionExpression'||mapper.async||mapper.params.length!==1||parameter.type!=='Identifier'||value?.type!=='ObjectExpression')return false;
+    const properties=new Map(value.properties.filter(property=>property.type==='Property'&&!property.computed).map(property=>[property.key.name??property.key.value,property.value]));
+    const accelerator=properties.get('accelerator'),label=properties.get('label');
+    return accelerator?.type==='Identifier'&&accelerator.name===parameter.name&&label?.type==='CallExpression'&&
+      label.arguments[0]?.type==='Identifier'&&label.arguments[0].name===parameter.name;
+  }catch{return false;}
 }
 
 // The current action forwards its remaining arguments to the mounted bridge.

@@ -145,6 +145,22 @@
       "officialUpdates": {
         "stateSelector": "sHt"
       }
+    },
+    {
+      "appVersion": "26.1023.50603",
+      "buildNumber": "22391",
+      "entry": "app://-/assets/index-8f2d791e1123.js",
+      "module": "app://-/assets/app-initial-b0cd131b9dba.js",
+      "scopeModule": "app://-/assets/app-shared-624e1c099f95.js",
+      "servicesModule": "app://-/assets/app-shared-624e1c099f95.js",
+      "exports": {
+        "scope": "uct",
+        "services": "Sst",
+        "servicesSetter": "Tst"
+      },
+      "officialUpdates": {
+        "stateSelector": "cWt"
+      }
     }
   ]
 }

@@ -116,6 +116,17 @@ test('capture controls and transcripts are identified by consumed inputs, not wr
   assert.equal(matchesWorkspaceFunction(wrapper, 1, contract, workspaceInputProperties(parseExpressionAt(wrapper, 0, { ecmaVersion: 'latest' }))), false);
 });
 
+test('shortcut binding discovery separates the positional helper from a settings row consumer',()=>{
+  const source='function bindings(command,keymap,platform,presentation="codex"){return effective(command,presentation==="chatgpt"?defaults:collect({commandId:command,keymapState:keymap,isMacOS:platform==="macOS"}),platform).map(accelerator=>({accelerator:accelerator,label:format(accelerator,platform==="macOS")}))}';
+  const row='function row(props){const {keymapState,command}=props;return render({accelerator:command,label:bindings(command,keymapState,"macOS","chatgpt")})}';
+  const contract=WORKSPACE_FUNCTION_ROLES.shortcutBindings;
+  assert.equal(matchesWorkspaceFunction(source,3,contract),true);
+  assert.equal(matchesWorkspaceFunction(source,4,contract),true);
+  assert.equal(matchesWorkspaceFunction(row,1,contract),false);
+  assert.equal(matchesWorkspaceFunction(source.replace('accelerator:accelerator','accelerator:other'),3,contract),false);
+  assert.equal(matchesWorkspaceFunction(source.replace('format(accelerator,','format(other,'),3,contract),false);
+});
+
 test('navigation discovers migrated scopes, draft identity and signal without importing a version-specific name', async t => {
   const oldDocument = globalThis.document, oldLocation = globalThis.location;
   const sharedUrl = 'app://-/assets/app-shared-arbitrary.js', initialUrl = 'app://-/assets/app-initial-unrelated.js';
