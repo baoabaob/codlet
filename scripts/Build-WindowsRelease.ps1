@@ -7,10 +7,12 @@ param(
   [string]$ToolchainRoot,
   [ValidateSet('stable','preview')][string]$Channel='preview',
   [string[]]$OnlineBaseDirectories=@(),
-  [string[]]$OnlineModuleIds
+  [string[]]$OnlineModuleIds,
+  [switch]$OnlineSourceOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if($OnlineSourceOnly -and $OnlineModuleIds){throw 'OnlineSourceOnly cannot be combined with OnlineModuleIds'}
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $output=[IO.Path]::GetFullPath($OutputDirectory)
 if(Test-Path -LiteralPath $output){throw 'A fresh Windows release directory is required'}
@@ -38,6 +40,7 @@ $setup=Join-Path $output ('Codlet-'+$version+'-windows-x64-setup.exe')
 & (Join-Path $PSScriptRoot 'Build-WindowsInstaller.ps1') -MsiPath $msi -OutputPath $setup -Version $version|Out-Null
 $planArguments=@{Action='Plan';WindowsPortableDirectory=$portable;WindowsMsi=$msi;WindowsMsiManifest=(Join-Path ($msi+'.build') 'distribution-manifest.json');WindowsSetup=$setup;WindowsOnly=$true;OutputDirectory=(Join-Path $output 'release');Channel=$Channel;WindowsOnlineBaseDirectories=$OnlineBaseDirectories}
 if($OnlineModuleIds){$planArguments.OnlineModuleIds=$OnlineModuleIds}
+if($OnlineSourceOnly){$planArguments.OnlineSourceOnly=$true}
 $plan=& (Join-Path $PSScriptRoot 'Publish-Release.ps1') @planArguments
 $plan|Out-String|Set-Content -LiteralPath (Join-Path $output 'release-plan-output.json') -Encoding UTF8
 $receipt=[ordered]@{schema=1;kind='codlet-windows-release-build';version=$version;sourceCommit=$sourceCommit;builtCore=$built;coreSha256=(Get-FileHash -LiteralPath $CodletExecutable -Algorithm SHA256).Hash.ToLowerInvariant();msi=$msi;setup=$setup;releasePlan=(Join-Path $output 'release/release-plan.json');published=$false}

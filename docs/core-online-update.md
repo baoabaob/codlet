@@ -14,6 +14,11 @@ The `codlet-update-managed-v2.json` catalog uses schema 2. Each targeted Windows
 
 `Build-OnlineRuntime.ps1` verifies a recorded base distribution, checks that its executable contains the exact bridge/bootstrap, and copies the unchanged resident files into the new component package. `-ModuleIds core-ui-provider` selects just that module plus Native source; the default selects all eleven modules. Static eligibility does not replace runtime preflight. Duplicate selectors and payloads whose resident files disagree with the selector are rejected. Selected targeted candidates carry `onlineOnly: true`, including across staging/restoration; failed live preflight cannot create a next-start intent or invoke the portable file replacement helper.
 
+`-SourceOnly` selects only the Native client source and omits renderer/Host
+modules. `Build-WindowsRelease.ps1` and `Publish-Release.ps1` expose this as
+`-OnlineSourceOnly` for their exact-base online artifacts. Source-only selection
+cannot be combined with a module list; it does not change the complete package.
+
 A Windows runtime manifest can include `online` with `schema: 1`, `bridgeProtocol: 1`, exact `bridgeSha256` and `bootstrapSha256`, and `clientSourcePath: "runtime/core-modules/client-source.cjs"`. The source must be in the manifest file list with its size and SHA-256. It is limited to 1 MiB. Optional `modules` entries bind each fixed ID to `runtime/core-modules/<id>.js` or `.cjs`, with `moduleAbi: 1` and each file limited to 8 MiB. Unknown IDs, mismatched ID/path pairs, duplicates and arbitrary JavaScript paths are rejected.
 
 `node scripts/prepare-online-core.mjs <fresh-output.json> [exact-build-source-root] --all-modules` generates metadata for all eleven modules and the exact resident bridge/bootstrap. Omit the flag for source-only updates. `Build-RuntimeUpdate.ps1 -OnlineCoreMetadata <metadata.json>` adds the declared components from the input distribution. `frontend/build-codex.mjs` emits the fixed module artifacts and composes the Host bootstrap from the same sources embedded in Rust.

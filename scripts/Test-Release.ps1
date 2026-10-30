@@ -466,6 +466,23 @@ try {
             $dryResult=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript -Action $action -PlanPath $windowsPlan
             if($LASTEXITCODE -ne 0 -or (($dryResult -join "`n")|ConvertFrom-Json).externalWrites){throw 'Windows-only release plan cannot be safely validated'}
         }
+        $sourceOnlyOutput=$windowsOutput+'-source-only'
+        $sourceOnlyArguments=@($windowsArguments|Where-Object {$_ -notin @('-OnlineModuleIds','core-ui-provider')}|ForEach-Object {if($_ -eq $windowsOutput){$sourceOnlyOutput}else{$_}})+@('-OnlineSourceOnly')
+        Assert-PublisherRejects @($sourceOnlyArguments+@('-OnlineModuleIds','core-ui-provider')) 'OnlineSourceOnly cannot be combined with OnlineModuleIds'
+        $null=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @sourceOnlyArguments
+        if($LASTEXITCODE -ne 0){throw 'Source-only Preview fixture failed'}
+        $sourceOnlyCatalog=Read-JsonFile (Join-Path $sourceOnlyOutput 'codlet-update-managed-v2.json')
+        $sourceOnlyTargeted=@($sourceOnlyCatalog.artifacts|Where-Object {$_.PSObject.Properties['residentSha256']})
+        if($sourceOnlyTargeted.Count -ne 1){throw 'Source-only release did not retain its exact resident selector'}
+        $sourceOnlyZip=[IO.Compression.ZipFile]::OpenRead((Join-Path $sourceOnlyOutput $sourceOnlyTargeted[0].assetName))
+        try{
+            $sourceOnlyManifest=$utf8.GetString((Read-ZipEntryBytes ($sourceOnlyZip.GetEntry('runtime-update-manifest.json')) 256KB))|ConvertFrom-Json
+            if($sourceOnlyManifest.online.PSObject.Properties['modules'] -or @($sourceOnlyManifest.files).Count -ne 3){throw 'Source-only release selected additional Core modules'}
+        }finally{$sourceOnlyZip.Dispose()}
+        foreach($action in @('PrepareDraft','Publish')){
+            $dryResult=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript -Action $action -PlanPath (Join-Path $sourceOnlyOutput 'release-plan.json')
+            if($LASTEXITCODE -ne 0 -or (($dryResult -join "`n")|ConvertFrom-Json).externalWrites){throw 'Source-only release plan cannot be safely validated'}
+        }
     }
     $savedValidation = [IO.File]::ReadAllBytes($validationPath)
     try {
@@ -508,6 +525,7 @@ try {
             'release notes explain package choices, preview improvements, checksums, and the precise macOS signing status',
             'final and preview metadata retain their channel and draft/publish actions make no external writes without Apply',
             'a release includes complete and exact-resident online packages; mismatched resident selectors are refused',
+            'source-only online packages select the Native client component and pass draft/publish validation',
             'distribution manifests and the native setup receipt remain local verification inputs',
             'changed local-only verification manifest is refused',
             'changed same-version local asset is refused'

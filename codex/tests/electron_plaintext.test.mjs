@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import Module, { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -44,6 +44,34 @@ const main = `class wEe {
 }; module.exports={wEe};`;
 const hash = code => createHash('sha256').update(code).digest('hex');
 function compile(name, code) { const filename=path.join(process.cwd(),name), module=new Module(filename); module.filename=filename; module.paths=Module._nodeModulePaths(process.cwd()); module._compile(code,filename); return module.exports; }
+test('Electron upload close precedes the response and is not a failed HTTP transaction',async()=>{
+  const events=[],nativeError=Error('Native transport failed');let outcome='response',dispatched=0;
+  globalThis.fixtureNativeRequest=class extends Writable {
+    constructor(){super({autoDestroy:true});this.on('finish',()=>events.push('finish'));this.on('close',()=>events.push('close'));}
+    _write(_chunk,_encoding,callback){callback();}
+    _final(callback){dispatched++;callback();setImmediate(()=>{events.push(outcome);if(outcome==='error'){this.emit('error',nativeError);return;}if(outcome==='abort'){this.emit('abort');return;}const incoming=Readable.from([Buffer.from('upstream')]);incoming.statusCode=200;incoming.headers={};this.emit('response',incoming);});}
+    abort(){this.emit('abort');}
+  };
+  const boot=`class Pt {assertAllowed(){}fetch(){}request(){return new globalThis.fixtureNativeRequest();}}module.exports={Pt};`;
+  const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source:{interceptHttp(input,{forward}){return forward(input,{signal:new AbortController().signal});}}},
+    {expectedHashes:{'bootstrap-DK4EfNwt.js':hash(boot),'main-LM8MUIFp.js':hash(main)}});
+  try {
+    const {Pt}=compile('bootstrap-DK4EfNwt.js',boot),{wEe}=compile('main-LM8MUIFp.js',main),wrapper=new wEe(new Pt());
+    for(const progress of [false,true]) {
+      events.length=0;
+      const output=await wrapper.performDesktopFetch({progress});
+      assert.equal(progress?await new Response(Readable.toWeb(output)).text():await output.text(),'upstream');
+      assert.deepEqual(events,['finish','close','response']);
+    }
+    for(const next of ['error','abort'])for(const progress of [false,true]) {
+      outcome=next;events.length=0;
+      await assert.rejects(wrapper.performDesktopFetch({progress}),error=>next==='error'?error===nativeError:error.code==='desktop_request_aborted');
+      assert.deepEqual(events,['finish','close',next]);
+    }
+    assert.equal(dispatched,6,'a failed Native transaction must not be replayed');
+  }finally{hook.close();delete globalThis.fixtureNativeRequest;}
+});
+
 test('HTTP and Stdio never consult Core update admission, including repeated Native errors',async()=>{
   const nativeError=Error('Native request failed');globalThis.nativeContinuityError=nativeError;globalThis.nativeContinuityCalls=0;
   const boot=`class Pt {assertAllowed(){}fetch(){}request(){const request=new(require('node:events').EventEmitter)();request.abort=()=>{};request.end=()=>{globalThis.nativeContinuityCalls++;queueMicrotask(()=>request.emit('error',globalThis.nativeContinuityError));};return request;}}module.exports={Pt};`;

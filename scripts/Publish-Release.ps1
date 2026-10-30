@@ -14,6 +14,7 @@ param(
     [ValidateSet('stable','preview')][string]$Channel = 'stable',
     [string[]]$WindowsOnlineBaseDirectories = @(),
     [string[]]$OnlineModuleIds,
+    [switch]$OnlineSourceOnly,
     [string]$WindowsBridgeNodeDirectory,
     [string]$OutputDirectory,
     [string]$PlanPath,
@@ -23,6 +24,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if($OnlineSourceOnly -and $OnlineModuleIds){throw 'OnlineSourceOnly cannot be combined with OnlineModuleIds'}
 $ProgressPreference = 'SilentlyContinue'
 $script:utf8 = [Text.UTF8Encoding]::new($false)
 $script:token = $null
@@ -368,9 +370,13 @@ function Assert-WindowsUpdateZip([string]$ZipPath, [string]$Version, [switch]$Le
         if($ResidentSha256){
             if($ResidentSha256 -notmatch '^[0-9a-f]{64}$' -or -not $manifest.PSObject.Properties['online']){Fail 'Targeted updates require a resident identity and online contract.'}
             $online=$manifest.online
-            if($online.schema -ne 1 -or $online.bridgeProtocol -ne 1 -or $online.bridgeSha256 -notmatch '^[0-9a-f]{64}$' -or $online.bootstrapSha256 -notmatch '^[0-9a-f]{64}$' -or $online.clientSourcePath -cne 'runtime/core-modules/client-source.cjs' -or $online.moduleAbi -ne 1){Fail 'Invalid online Core contract.'}
+            if($online.schema -ne 1 -or $online.bridgeProtocol -ne 1 -or $online.bridgeSha256 -notmatch '^[0-9a-f]{64}$' -or $online.bootstrapSha256 -notmatch '^[0-9a-f]{64}$' -or $online.clientSourcePath -cne 'runtime/core-modules/client-source.cjs' -or ($online.PSObject.Properties['moduleAbi'] -and $online.moduleAbi -ne 1)){Fail 'Invalid online Core contract.'}
             $modulePaths=@{'renderer-bootstrap'='runtime/core-modules/renderer-bootstrap.js';'renderer-helpers'='runtime/core-modules/renderer-helpers.js';'renderer-ui'='runtime/core-modules/renderer-ui.js';'renderer-facade'='runtime/core-modules/renderer-facade.js';'renderer-page'='runtime/core-modules/renderer-page.js';'renderer-i18n'='runtime/core-modules/renderer-i18n.js';'renderer-codex-sdk'='runtime/core-modules/renderer-codex-sdk.js';'renderer-core-services'='runtime/core-modules/renderer-core-services.cjs';'core-ui-provider'='runtime/core-modules/core-ui-provider.cjs';'core-desktop-provider'='runtime/core-modules/core-desktop-provider.cjs';'host-bootstrap'='runtime/core-modules/host-bootstrap.cjs'}
-            if(@($online.modules).Count -lt 1 -or @($online.modules).Count -gt 11 -or @($online.modules|ForEach-Object {$_.id}|Sort-Object -Unique).Count -ne @($online.modules).Count){Fail 'Invalid online module inventory.'}
+            $onlineModules=@()
+            if($online.PSObject.Properties['modules']){
+                $onlineModules=@($online.modules)
+                if(-not $online.PSObject.Properties['moduleAbi'] -or $online.moduleAbi -ne 1 -or $onlineModules.Count -lt 1 -or $onlineModules.Count -gt 11 -or @($onlineModules|ForEach-Object {$_.id}|Sort-Object -Unique).Count -ne $onlineModules.Count){Fail 'Invalid online module inventory.'}
+            }
             $residentPaths=[string[]]$expectedFiles;[Array]::Sort($residentPaths,[StringComparer]::Ordinal)
             $identity=''
             foreach($relative in $residentPaths){$record=@($files|Where-Object {$_.path -ceq $relative})[0];$identity+=$record.path+[char]0+[string]$record.bytes+[char]0+$record.sha256+"`n"}
@@ -379,7 +385,7 @@ function Assert-WindowsUpdateZip([string]$ZipPath, [string]$Version, [switch]$Le
             if($actual -cne $ResidentSha256){Fail 'Online payload resident files differ from the catalog selector.'}
             $expectedFiles+=@($online.clientSourcePath)
             if(-not $entries.ContainsKey($online.clientSourcePath) -or $entries[$online.clientSourcePath].Length -gt 1MB){Fail 'Invalid online Native source.'}
-            foreach($module in $online.modules){
+            foreach($module in $onlineModules){
                 if(-not $modulePaths.ContainsKey([string]$module.id) -or $module.path -cne $modulePaths[$module.id] -or -not $entries.ContainsKey($module.path) -or $entries[$module.path].Length -gt 8MB){Fail 'Unknown or invalid online module.'}
                 $expectedFiles+=$module.path
             }
@@ -579,6 +585,7 @@ function New-ReleasePlan {
             $onlineOutput=Join-Path $stage ('.online-build-'+[Guid]::NewGuid().ToString('N'))
             $onlineArguments=@{BaseDirectory=$baseDirectory;Version=$version;Channel=$Channel;OutputDirectory=$onlineOutput}
             if($OnlineModuleIds){$onlineArguments.ModuleIds=$OnlineModuleIds}
+            if($OnlineSourceOnly){$onlineArguments.SourceOnly=$true}
             $built=& (Join-Path $PSScriptRoot 'Build-OnlineRuntime.ps1') @onlineArguments
             if(-not $baseIdentities.Add($built.residentSha256)){Fail 'Duplicate online resident identity.'}
             if($built.eligible){

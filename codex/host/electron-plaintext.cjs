@@ -252,7 +252,10 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
             } catch (error) { finish(error); live.abort(); }
           });
           live.once('error', error => { signal?.removeEventListener('abort', abort); finish(error); });
-          live.once('close',()=>{if(!settled){signal?.removeEventListener('abort',abort);finish(fail('desktop_request_closed'));}});
+          // Electron closes its Writable upload after end(), before the HTTP
+          // response arrives. Only its request error/abort events terminate the
+          // transaction; upload close is not a network failure.
+          live.once('abort',()=>{signal?.removeEventListener('abort',abort);finish(fail('desktop_request_aborted'));});
           live.once('response', incoming => {
             incoming.once('end', () => signal?.removeEventListener('abort', abort));
             incoming.once('close', () => signal?.removeEventListener('abort', abort));

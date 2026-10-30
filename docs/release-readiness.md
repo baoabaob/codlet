@@ -1,8 +1,8 @@
 # Codlet 发布准备与验证范围
 
-当前 Windows x64 本地候选 **1.0.0-rc.20** 已通过两版真实 Native 的独立虚拟机验收，可据此交付本地安装包；rc.20 尚无远程发布记录，已发布安装包仍为 rc.19。Codlet 提供轻量插件加载、统一 SDK 和 AI 创建流程。Core 根据实际接口和能力接入客户端；未知文件指纹进入协议和结构验证。
+当前 Windows x64 本地候选 **1.0.0-rc.21** 修复 rc.20 将 Electron 上传流关闭误判为 HTTP 请求失败的问题。该错误会阻断账户、工作区设置和界面功能开关请求；[rc.21 验证记录](releases/1.0.0-rc.21/validation.md)记录修复与交付状态。rc.20 已于 2026-10-28 发布。Codlet 提供轻量插件加载、统一 SDK 和 AI 创建流程。Core 根据实际接口和能力接入客户端；未知文件指纹进入协议和结构验证。
 
-本轮 [rc.20 验证记录](releases/1.0.0-rc.20/validation.md) 和 [Native 适配说明](native-adaptation-20261028.md) 记录同一生产程序在 build 22391/21828 上的真实对话、权限读取、侧栏布局热切换、project/list 分组及正常退出。新版还实际经过初次 CDP 初始化超时、原 session 退休确认和自动恢复，无手工 reload。快捷键只验证接口准备；无远端的 connection 分组和物理按键不在通过范围。安装包结构和安装升级须分别记录。[rc.19](releases/1.0.0-rc.19/validation.md)、[rc.18](releases/1.0.0-rc.18/validation.md)、[rc.17](releases/1.0.0-rc.17/validation.md) 和 [rc.11 安装验收](releases/1.0.0-rc.11/validation.md) 保留各自原始范围。[仓库职责](repository-layout.md)说明源码、分发和归档位置。
+[rc.20 验证记录](releases/1.0.0-rc.20/validation.md) 和 [Native 适配说明](native-adaptation-20261028.md) 保留同一生产程序在 build 22391/21828 上的真实对话、权限读取、侧栏布局热切换、project/list 分组及正常退出证据；这些测试未覆盖本次失败的已登录 Desktop HTTP 路径。新版还实际经过初次 CDP 初始化超时、原 session 退休确认和自动恢复，无手工 reload。快捷键只验证接口准备；无远端的 connection 分组和物理按键不在通过范围。安装包结构和安装升级须分别记录。[rc.19](releases/1.0.0-rc.19/validation.md)、[rc.18](releases/1.0.0-rc.18/validation.md)、[rc.17](releases/1.0.0-rc.17/validation.md) 和 [rc.11 安装验收](releases/1.0.0-rc.11/validation.md) 保留各自原始范围。[仓库职责](repository-layout.md)说明源码、分发和归档位置。
 
 兼容在线更新覆盖明确列出的 Core JavaScript 模块、Native source 和显式插件状态。Rust/Node、固定桥接与注入组件继续常驻；这些组件变化以及首次从旧架构升级，需要自然退出后的下一次启动。回执未知时查询原操作，不盲目重放。详见[在线更新契约](core-online-update.md)。
 

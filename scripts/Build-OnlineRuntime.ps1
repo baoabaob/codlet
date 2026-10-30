@@ -5,10 +5,12 @@ param(
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
   [ValidateSet('stable','preview')][string]$Channel='preview',
   [string]$BuildRoot=(Split-Path -Parent $PSScriptRoot),
-  [string[]]$ModuleIds
+  [string[]]$ModuleIds,
+  [switch]$SourceOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if($SourceOnly -and $ModuleIds){throw 'SourceOnly cannot be combined with ModuleIds'}
 $root=[IO.Path]::GetFullPath($BuildRoot);$base=[IO.Path]::GetFullPath($BaseDirectory);$output=[IO.Path]::GetFullPath($OutputDirectory)
 if(Test-Path -LiteralPath $output){throw 'Fresh online output required'}
 $parent=[IO.Path]::GetDirectoryName($output);[IO.Directory]::CreateDirectory($parent)|Out-Null
@@ -33,11 +35,12 @@ try{
     if((Get-Item -LiteralPath $target).Length -ne $file.bytes -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw 'Resident input changed during copy'}
   }
   $metadataPath=Join-Path $scratch 'online-metadata.json'
-  $selection=if($ModuleIds){'--modules='+($ModuleIds -join ',')}else{'--all-modules'}
-  & node (Join-Path $PSScriptRoot 'prepare-online-core.mjs') $metadataPath $root $selection|Out-Null
+  $selection=@(if(-not $SourceOnly){if($ModuleIds){'--modules='+($ModuleIds -join ',')}else{'--all-modules'}})
+  & node (Join-Path $PSScriptRoot 'prepare-online-core.mjs') $metadataPath $root @selection|Out-Null
   if($LASTEXITCODE -ne 0){throw 'Online contract preparation failed'}
   $metadata=[IO.File]::ReadAllText($metadataPath)|ConvertFrom-Json
-  $components=@($metadata.clientSourcePath)+@($metadata.modules|ForEach-Object {$_.path})
+  $components=@($metadata.clientSourcePath)
+  if($metadata.PSObject.Properties['modules']){$components+=@($metadata.modules|ForEach-Object {$_.path})}
   foreach($relative in $components){$source=Join-Path $root $relative;Plain $source;$target=Join-Path $payloadRoot $relative;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))|Out-Null;[IO.File]::Copy($source,$target,$false)}
   $built=& (Join-Path $PSScriptRoot 'Build-RuntimeUpdate.ps1') -InputDirectory $payloadRoot -PayloadProfile portable -Version $Version -OutputDirectory $output -Channel $Channel -OnlineCoreMetadata $metadataPath
   $name='codlet-online-'+$Version+'-win-x64-'+$inspection.residentSha256.Substring(0,16)+'.zip'
