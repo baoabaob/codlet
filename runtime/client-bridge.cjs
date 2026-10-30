@@ -24,6 +24,10 @@ async function bounded(operation, code, timeoutMs = 10000) {
 }
 
 function describeClasses(ast) {
+  let hasBinding=false;
+  walkAst(ast,node=>{if(['VariableDeclaration','ClassDeclaration','FunctionDeclaration'].includes(node.type))hasBinding=true;},
+    node=>hasBinding||node!==ast&&['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression','ClassDeclaration','ClassExpression'].includes(node.type));
+  if(!hasBinding)return [];
   const tree=ast.type==='Program'?ast:{type:'Program',body:ast.body,sourceType:'script',range:[ast.start,ast.end]},
     scopes=analyze(tree,{ecmaVersion:2025,sourceType:'script',optimistic:false,ignoreEval:false}),
     bindings=new Set(scopes.globalScope.variables),declarations=new WeakMap(),references=new WeakMap(),classes=new Map();
@@ -48,8 +52,10 @@ function walkAst(root, visit, boundary = () => false) {
   while(pending.length) {
     const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;
     seen.add(node);visit(node);if(boundary(node))continue;
-    for(const [name,child] of Object.entries(node))if(name!=='start'&&name!=='end') {
-      if(Array.isArray(child))for(const item of child)pending.push(item);else if(child&&typeof child==='object')pending.push(child);
+    for(const name in node)if(name!=='start'&&name!=='end'&&name!=='range'&&name!=='loc') {
+      const child=node[name];
+      if(Array.isArray(child)){for(const item of child)if(item&&typeof item.type==='string')pending.push(item);}
+      else if(child&&typeof child.type==='string')pending.push(child);
     }
   }
 }
@@ -180,7 +186,10 @@ function observeModules(root, key, dependencies = {}) {
     const edits=[]; let classes=[],factories=[],expressionName='__codletExpression';
     try {
       const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true,ranges:true});
-      const identifiers=new Set();walkAst(ast,node=>{if(node.type==='Identifier')identifiers.add(node.name);});
+      const identifiers=new Set();walkAst(ast,node=>{
+        if(node.type==='Identifier')identifiers.add(node.name);
+        if(node.type==='MethodDefinition'&&node.kind==='constructor')edits.push({at:node.value.body.end-1,text:`;${reference}?.instance(this);`});
+      });
       while(identifiers.has(expressionName))expressionName+='_';
       classes=describeClasses(ast);
       factories=chunkFactories(ast);
@@ -189,11 +198,13 @@ function observeModules(root, key, dependencies = {}) {
         const at=directives.at(-1)?.end??factory.body.start+1;
         edits.push({at,text:`;${reference}?.captureFactory(${factory.parameters[0]},(${expressionName})=>eval(${expressionName}));`});
       }
-      walkAst(ast,node=>{if(node.type==='MethodDefinition'&&node.kind==='constructor')edits.push({at:node.value.body.end-1,text:`;${reference}?.instance(this);`});});
     } catch { /* Unsupported syntax still uses the scoped module resolver. */ }
     const registration = `\n;${reference}?.observeFactories(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,${JSON.stringify(factories.map(({id,classes})=>({id,classes})))});${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(${expressionName})=>eval(${expressionName}),${JSON.stringify(classes)});`;
-    let instrumented=code;
-    for(const edit of edits.sort((a,b)=>b.at-a.at))instrumented=instrumented.slice(0,edit.at)+edit.text+instrumented.slice(edit.at);
+    const pieces=[];let consumed=0;
+    for(const edit of edits.map((edit,index)=>({...edit,index})).sort((a,b)=>a.at-b.at||b.index-a.index)){
+      pieces.push(code.slice(consumed,edit.at),edit.text);consumed=edit.at;
+    }
+    pieces.push(code.slice(consumed));const instrumented=pieces.join('');
     return original.call(this, instrumented + registration, filename);
   };
   Object.defineProperty(globalThis, key, { value: registry, configurable: true });
