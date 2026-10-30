@@ -2,6 +2,7 @@ import { component, componentSource, desktopDocument, uniqueExport, currentEleme
 import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import { reactFactories } from './react-factories.js';
 import {parseExpressionAt} from 'acorn';
+import {workspaceLexicalReferences,visitWorkspaceSource} from './workspace-source.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export const COMPOSER_PROFILE = Object.freeze({ rootAttribute: 'data-codex-composer-root', scrollAreaAttribute: 'data-composer-utility-bar-scroll-area' });
@@ -114,9 +115,21 @@ export function newTaskHook(initial) {
     return ['startInSidebar', 'focusComposerNonce', 'codexAppMode'].every(marker => source.includes(marker)) &&
       (source.includes('prefillAeonStartTarget') || ['freshDraft', 'prefillComposerMode', 'prepareNavigation'].every(marker => source.includes(marker)));
   });
-  if (actions.length !== 1 || !/^[A-Za-z_$][\w$]*$/.test(actions[0].name)) return undefined;
-  const actionCall = new RegExp('\\b' + actions[0].name.replace(/\$/g, '\\$') + '\\(');
-  const hooks = values.filter(fn => typeof fn === 'function' && fn.length === 0 && actionCall.test(componentSource(fn)) && componentSource(fn).includes('useContext'));
+  if (actions.length !== 1 || !actions[0].name) return undefined;
+  const name=actions[0].name;
+  const hooks = values.filter(fn => {
+    if(typeof fn!=='function'||fn.length!==0)return false;
+    const source=componentSource(fn);
+    if(!source.includes(name)||!source.includes('useContext'))return false;
+    try{
+      const ast=parseExpressionAt(source,0,{ecmaVersion:'latest',ranges:true}),resolve=workspaceLexicalReferences(ast);
+      let callsAction=false;
+      visitWorkspaceSource(ast,node=>{
+        if(node.type==='CallExpression'&&node.callee.type==='Identifier'&&node.callee.name===name&&resolve(node.callee)===`global:${name}`)callsAction=true;
+      });
+      return callsAction;
+    }catch{return false;}
+  });
   return hooks.length === 1 ? hooks[0] : undefined;
 }
 export async function discoverNative({ load = url => import(url), signal, read = async url => {

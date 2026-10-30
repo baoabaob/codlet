@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {resolveLoadedAsset,nativeRootModuleContract,staticModuleImports,captureResolvedAssets} from '../frontend/src/host-assets.js';
+import {resolveLoadedAsset,nativeRootModuleContract,staticModuleImports,captureResolvedAssets,resolveNativeRootModule} from '../frontend/src/host-assets.js';
 
 const base='app://-/assets/',entry=base+'index-current.js',main=base+'app-main-shell.js',initial=base+'app-initial-live.js',shared=base+'app-shared-core.js',utility=base+'utility.js';
 const rootSource=`import {client as nativeClient} from './app-shared-core.js';import './app-initial-live.js';
@@ -20,6 +20,14 @@ test('a mounted Native root proves its entry main and static initial dependency 
   const f=fixture(t);assert.equal(await resolveLoadedAsset('initial',{read:f.read}),initial);
   assert.equal(globalThis.mustNeverExecute,undefined);assert.equal(f.reads.includes(initial),false);assert.equal(new Set(f.reads).size,f.reads.length);
   const count=f.reads.length;assert.equal(await resolveLoadedAsset('initial',{read:f.read}),initial);assert.equal(f.reads.length,count);
+});
+test('runtime consumers reuse the exact entry and root render proof with cancellation and owner checks',async t=>{
+  const f=fixture(t),proof=await resolveNativeRootModule({read:f.read});
+  assert.equal(proof.entryUrl,entry);assert.equal(proof.mainUrl,main);assert.equal(proof.proof.renderCalls.size,1);assert.deepEqual(f.reads,[entry,main]);
+  await resolveLoadedAsset('initial',{read:f.read});
+  const cached=await resolveNativeRootModule({read:()=>assert.fail('Reuse the completed root proof')});assert.equal(cached.mainUrl,main);
+  const controller=new AbortController();controller.abort();await assert.rejects(resolveNativeRootModule({signal:controller.signal}),{name:'AbortError'});
+  f.window.__nativeRoot={_internalRoot:f.internal};assert.throws(()=>proof.check(),{code:'desktop_asset_owner_replaced'});assert.throws(()=>cached.check(),{code:'desktop_asset_owner_replaced'});
 });
 test('an unmounted Native root remains pending and the same document resolves after its real mount',async t=>{
   const f=fixture(t);delete f.root.__reactContainer$test;await assert.rejects(resolveLoadedAsset('initial',{read:f.read}),{code:'ui_host_pending'});assert.deepEqual(f.reads,[]);

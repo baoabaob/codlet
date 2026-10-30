@@ -275,6 +275,7 @@ export function createNavigation(context, native, host, withComposer = true) {
       throw fail('invalid_owner','A new task draft requires this caller’s active page');
     if(!args||Object.keys(args).some(key=>key!=='prompt')||typeof args.prompt!=='string'||!args.prompt.trim()||args.prompt.length>16384)
       throw fail('invalid_argument','A new task draft requires a bounded prompt');
+    if(typeof native.useStartNewConversation!=='function')throw fail('ui_composer_unsupported','The native new-task action contract is unavailable');
     if(typeof entry.compose!=='function')throw fail('ui_composer_unavailable','The native new-task composer is not ready');
     entry.compose({...native.newTaskOptions,prefillPrompt:args.prompt,prefillLocalExecution:true,prefillComposerMode:'local',startInSidebar:true});
     return {opened:true,submitted:false};

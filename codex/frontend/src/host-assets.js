@@ -36,7 +36,14 @@ export function staticModuleImports(source,parent){
   return[...new Set(imports)];
 }
 
-export function nativeRootModuleContract(source,parent){
+export function nativeRootModuleImport(source,parent){
+  const mains=new Set();
+  for(const node of nodes(parse(source,{ecmaVersion:'latest',sourceType:'module'})))if(node.type==='ImportExpression'){const url=urlFor(text(node.source),parent);if(role(url,'main'))mains.add(url);}
+  if(mains.size!==1)throw fail('desktop_asset_drift',`A unique Native root module import is required (found ${mains.size})`);
+  return[...mains][0];
+}
+
+export function nativeRootModuleProof(source,parent){
   const ast=parse(source,{ecmaVersion:'latest',sourceType:'module',ranges:true});
   const scopes=analyze(ast,{ecmaVersion:2024,sourceType:'module',optimistic:true,ignoreEval:true}),references=new WeakMap(),writes=new Map(),imports=new Map();
   for(const scope of scopes.scopes){for(const variable of scope.variables)for(const id of variable.identifiers)references.set(id,variable);for(const reference of scope.references)references.set(reference.identifier,reference.resolved);}
@@ -60,12 +67,14 @@ export function nativeRootModuleContract(source,parent){
     if(typeof key!=='string'||!globalRoot(node.left,key)||!globalRoot(assignment.left,key)||call?.type!=='CallExpression'||call.arguments.length!==1||callee?.type!=='MemberExpression'||property(callee)!=='createRoot'||!assigned(callee.object,fromShared))continue;
     const rootIds=new Set();
     if(!assigned(call.arguments[0],value=>{const get=last(value);if(get?.type!=='CallExpression'||get.arguments.length!==1||get.callee.type!=='MemberExpression'||property(get.callee)!=='getElementById'||!global(get.callee.object,'document')||typeof text(get.arguments[0])!=='string')return false;rootIds.add(text(get.arguments[0]));return true;})||rootIds.size!==1)continue;
-    const render=all.some(value=>{const member=last(value.callee);return value.type==='CallExpression'&&value.arguments.length===1&&member?.type==='MemberExpression'&&property(member)==='render'&&assigned(member.object,value=>globalRoot(value,key));});
-    if(render)roots.push({key,rootId:[...rootIds][0]});
+    const renderCalls=all.filter(value=>{const member=last(value.callee);return value.type==='CallExpression'&&value.arguments.length===1&&member?.type==='MemberExpression'&&property(member)==='render'&&assigned(member.object,value=>globalRoot(value,key));});
+    if(renderCalls.length)roots.push({key,rootId:[...rootIds][0],renderCalls});
   }
   if(roots.length!==1)throw fail('desktop_asset_drift',`A unique Native root creation and render contract is required (found ${roots.length})`);
-  return roots[0];
+  const {key,rootId,renderCalls}=roots[0];
+  return{source,parent,ast,contract:{key,rootId},renderCalls:new Set(renderCalls)};
 }
+export const nativeRootModuleContract=(source,parent)=>nativeRootModuleProof(source,parent).contract;
 
 function captureOwner(){
   desktopDocument();const doc=document,href=location.href;
@@ -90,24 +99,34 @@ function captureOwner(){
   }};
 }
 
+function ownedSource(owner,{read,signal}){
+  const readSource=read??(async url=>{const response=await fetch(url,{credentials:'omit',signal});owner.check();signal?.throwIfAborted();if(!response.ok||response.url!==url)throw fail('ui_asset_unavailable','Unable to read the current Native module graph');return response.text();});
+  const sources=new Map();
+  return async url=>{signal?.throwIfAborted();owner.check();if(!sources.has(url))sources.set(url,Promise.resolve().then(()=>{owner.check();signal?.throwIfAborted();return readSource(url);}));const value=await sources.get(url);owner.check();signal?.throwIfAborted();if(typeof value!=='string')throw fail('desktop_asset_drift','Native module source is unavailable');return value;};
+}
+async function readRootModule(owner,source){
+  const mainUrl=nativeRootModuleImport(await source(owner.entryUrl),owner.entryUrl),mainSource=await source(mainUrl),proof=nativeRootModuleProof(mainSource,mainUrl);
+  owner.bind(proof.contract);return{entryUrl:owner.entryUrl,mainUrl,mainSource,proof};
+}
+export async function resolveNativeRootModule({read,signal}={}){
+  signal?.throwIfAborted();const owner=captureOwner(),previous=completed.get(owner.doc);
+  const check=()=>{signal?.throwIfAborted();owner.check();};
+  if(previous?.rootModule){previous.check();check();return{...previous.rootModule,check:()=>{previous.check();check();}};}
+  const rootModule=await readRootModule(owner,ownedSource(owner,{read,signal}));check();return{...rootModule,check};
+}
+
 export async function resolveLoadedAsset(name,{read,signal}={}){
   signal?.throwIfAborted();
   try{const url=loadedAsset(name);const previous=completed.get(document);if(previous)try{previous.check();}catch(error){if(error.code!=='desktop_asset_owner_replaced')throw error;completed.delete(document);}signal?.throwIfAborted();return url;}catch(error){if(error.code!=='ui_host_pending')throw error;}
   const owner=captureOwner(),previous=completed.get(owner.doc);
   if(previous){try{previous.check();owner.check();signal?.throwIfAborted();return select(previous.urls,name);}catch(error){completed.delete(owner.doc);if(error.code!=='desktop_asset_owner_replaced')throw error;}}
-  const readSource=read??(async url=>{const response=await fetch(url,{credentials:'omit',signal});owner.check();signal?.throwIfAborted();if(!response.ok||response.url!==url)throw fail('ui_asset_unavailable','Unable to read the current Native module graph');return response.text();});
-  const sources=new Map();
-  const source=async url=>{signal?.throwIfAborted();owner.check();if(!sources.has(url))sources.set(url,Promise.resolve().then(()=>{owner.check();signal?.throwIfAborted();return readSource(url);}));const value=await sources.get(url);owner.check();signal?.throwIfAborted();if(typeof value!=='string')throw fail('desktop_asset_drift','Native module source is unavailable');return value;};
-  const entry=parse(await source(owner.entryUrl),{ecmaVersion:'latest',sourceType:'module'}),mains=new Set();
-  for(const node of nodes(entry))if(node.type==='ImportExpression'){const url=urlFor(text(node.source),owner.entryUrl);if(role(url,'main'))mains.add(url);}
-  if(mains.size!==1)throw fail('desktop_asset_drift',`A unique Native root module import is required (found ${mains.size})`);
-  const main=[...mains][0],mainSource=await source(main);owner.bind(nativeRootModuleContract(mainSource,main));
+  const source=ownedSource(owner,{read,signal}),rootModule=await readRootModule(owner,source),main=rootModule.mainUrl;
   const pending=[main],seen=new Set(),urls=new Set();
   while(pending.length){const url=pending.pop();if(seen.has(url))continue;seen.add(url);
     if(role(url,'initial')||role(url,'shared')){urls.add(url);continue;}
     for(const dependency of staticModuleImports(await source(url),url))if(!seen.has(dependency))pending.push(dependency);
   }
-  owner.check();signal?.throwIfAborted();const result=select(urls,name);completed.set(owner.doc,{check:owner.check,urls});return result;
+  owner.check();signal?.throwIfAborted();const result=select(urls,name);completed.set(owner.doc,{check:owner.check,urls,rootModule});return result;
 }
 function select(urls,name){const found=[...urls].filter(url=>role(url,name));if(found.length!==1)throw fail('desktop_asset_drift',`A unique Native static ${name} module is required (found ${found.length})`);return found[0];}
 

@@ -222,6 +222,17 @@ test('only the active live page can open an editable native task draft without s
   assert.throws(()=>f.navigation.newTaskDraft({prompt:'Second'},invocation),{code:'invalid_owner'});
   lease.remove();await tick();assert.equal(f.drafts.length,1);
 });
+
+test('an unavailable new-task contract leaves page navigation usable and is distinct from an uncommitted bridge',async t=>{
+  const f=fixture(t),invocation={caller:{pluginId:'codlet-gui',generation:1}};
+  f.native.useStartNewConversation=undefined;
+  register(f);await tick();f.control('Codlet').click();await tick();
+  assert.ok(f.document.querySelector('[data-codlet-page-host]'));
+  assert.throws(()=>f.navigation.newTaskDraft({prompt:'Draft'},invocation),{code:'ui_composer_unsupported'});
+  f.native.useStartNewConversation=()=>()=>{};
+  assert.throws(()=>f.navigation.newTaskDraft({prompt:'Draft'},invocation),{code:'ui_composer_unavailable'});
+  assert.equal(f.drafts.length,0);
+});
 test('an opt-in toolbar belongs to the native header outlet and retires with its page',async t=>{
   const f=fixture(t),{lease,reply}=register(f,{toolbar:true});await tick();assert.equal(f.toolbarOutlet.childElementCount,0);
   f.control('Codlet').click();await tick();

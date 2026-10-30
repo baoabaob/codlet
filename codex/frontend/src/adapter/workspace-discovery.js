@@ -1,11 +1,11 @@
-import { parseExpressionAt } from 'acorn';
+import { parse,parseExpressionAt } from 'acorn';
 import { localConnection, uniqueModuleExport, componentSource } from '../host-discovery.js';
-import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
+import {resolveLoadedAsset,captureResolvedAssets,staticModuleImports,nativeRootModuleImport,nativeRootModuleProof,resolveNativeRootModule} from '../host-assets.js';
 import { workspaceError } from './workspace-dom.js';
 import { createNativeComposerDriver } from './workspace-native-composer.js';
 import { createNativeNavigation, navigationSignalExport, nativeNavigationScope } from './workspace-native-navigation.js';
 import { createNativeViewportDriver, viewportSignalExports, viewportPersistenceReference } from './workspace-native-viewport.js';
-import { keymapSourceExport, clearWorkspaceSourceCache } from './workspace-source.js';
+import { keymapSourceExport, clearWorkspaceSourceCache,visitWorkspaceSource } from './workspace-source.js';
 import { WORKSPACE_FUNCTION_ROLES, matchesWorkspaceFunction, workspaceInputProperties } from './workspace-role-contracts.js';
 import { memoizeNativeLoad } from './native-readiness.js';
 
@@ -19,8 +19,78 @@ export function assetReferences(source, parent, role) {
   const pattern = new RegExp('["\'`]((?:\\./)?' + role + '-[A-Za-z0-9_-]+\\.js)["\'`]', 'g');
   return [...new Set([...source.matchAll(pattern)].map(match => new URL(match[1], parent).href))].filter(url => /^app:\/\/-\/assets\/[A-Za-z0-9_-]+\.js$/.test(url));
 }
-export async function shortcutSettingsReferences(graph, parent, read, entryUrls = () =>
-  Array.from(document.querySelectorAll('script[type="module"][src]'), node => node.src)) {
+export function transcriptImplementationReference(source,parent){
+  try{
+    const ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),imports=new Map(),exports=[];
+    for(const node of ast.body){
+      if(node.type==='ImportDeclaration')for(const specifier of node.specifiers)if(specifier.type==='ImportSpecifier')imports.set(specifier.local.name,{source:node.source.value,imported:specifier.imported.name??specifier.imported.value});
+    }
+    for(const node of ast.body){
+      if(node.type==='ExportNamedDeclaration')for(const specifier of node.specifiers??[])if((specifier.exported.name??specifier.exported.value)==='LocalConversationSideChatTab')exports.push(node.source?{source:node.source.value,imported:specifier.local.name??specifier.local.value}:imports.get(specifier.local.name));
+    }
+    const targets=[...new Set(exports.filter(Boolean).map(value=>new URL(value.source,parent).href))];
+    if(targets.length!==1||!/^app:\/\/-\/assets\/local-conversation-thread-[A-Za-z0-9_-]+\.js$/.test(targets[0]))return null;
+    const target=targets[0];
+    const initializes=ast.body.some(node=>node.type==='ExpressionStatement'&&node.expression.type==='CallExpression'&&node.expression.arguments.length===0&&node.expression.callee.type==='Identifier'&&imports.has(node.expression.callee.name)&&new URL(imports.get(node.expression.callee.name).source,parent).href===target);
+    return initializes?target:null;
+  }catch{return null;}
+}
+
+export async function transcriptModuleReferences(graph,parent,read){
+  const urls=assetReferences(graph,parent,'local-conversation-thread');
+  if(!urls.length)throw workspaceError('workspace_transcript_unavailable','Native transcript modules are missing');
+  const candidates=await Promise.all(urls.map(async url=>({url,source:await read(url)})));
+  const wrappers=candidates.filter(value=>value.source.includes('LocalConversationSideChatTab')&&!value.source.includes('retainActiveInterest'));
+  if(wrappers.length!==1)throw workspaceError('workspace_transcript_unavailable','The native transcript entry contract changed');
+  const wrapper=wrappers[0],target=transcriptImplementationReference(wrapper.source,wrapper.url);
+  if(target&&!candidates.some(value=>value.url===target))candidates.push({url:target,source:await read(target)});
+  const implementations=candidates.filter(value=>value.source.includes('trackReadState')&&value.source.includes('retainActiveInterest'));
+  if(implementations.length!==1||target&&implementations[0].url!==target)throw workspaceError('workspace_transcript_unavailable','The native transcript entry contract changed');
+  return{wrapper:wrapper.url,implementation:implementations[0].url};
+}
+const currentEntries=()=>Array.from(document.querySelectorAll('script[type="module"][src]'),node=>node.src);
+const propertyName=node=>node&&!node.computed?(node.key?.name??node.key?.value):null;
+// This is the asynchronous initializer whose result the current main module
+// renders, not a search through unrelated lazy or settings modules.
+export function initializedAppRuntimeReference(source,parent,proof=nativeRootModuleProof(source,parent)){
+  if(proof.source!==source||proof.parent!==parent)throw workspaceError('workspace_host_drift','Native root source proof changed');
+  const ast=proof.ast,targets=new Set(),parents=new WeakMap();
+  visitWorkspaceSource(ast,node=>{for(const value of Object.values(node))if(Array.isArray(value)){for(const child of value)if(child?.type)parents.set(child,node);}else if(value?.type)parents.set(value,node);});
+  const rendersResult=node=>{
+    let value=node,owner=parents.get(value);
+    while(owner?.type==='ConditionalExpression'&&(owner.consequent===value||owner.alternate===value)||owner?.type==='SequenceExpression'&&owner.expressions.at(-1)===value){value=owner;owner=parents.get(value);}
+    const call=parents.get(owner),callback=call?.arguments?.[0],argument=callback?.params?.[0],render=callback?.body;
+    return owner?.type==='MemberExpression'&&!owner.computed&&owner.object===value&&owner.property.name==='then'&&call?.type==='CallExpression'&&call.callee===owner&&callback?.type==='ArrowFunctionExpression'&&!callback.async&&callback.params.length===1&&argument?.type==='Identifier'&&proof.renderCalls.has(render)&&render.arguments[0].type==='Identifier'&&render.arguments[0].name===argument.name;
+  };
+  visitWorkspaceSource(ast,node=>{
+    const member=node.callee,loader=member?.object,initialize=node.arguments?.[0];
+    if(node.type!=='CallExpression'||member?.type!=='MemberExpression'||member.computed||member.property.name!=='then'||loader?.type!=='CallExpression'||initialize?.type!=='ArrowFunctionExpression'||initialize.async||!rendersResult(node))return;
+    const pattern=initialize.params[0],call=initialize.body;
+    if(initialize.params.length!==1||pattern?.type!=='ObjectPattern'||pattern.properties.length!==1||propertyName(pattern.properties[0])!=='initializeApp'||pattern.properties[0].value.type!=='Identifier'||call?.type!=='CallExpression'||call.callee.type!=='Identifier'||call.callee.name!==pattern.properties[0].value.name||call.arguments.length!==0)return;
+    const load=loader.arguments[0],body=load?.body?.body;
+    if(load?.type!=='ArrowFunctionExpression'||!load.async||load.params.length||body?.length!==2||body[0].type!=='VariableDeclaration'||body[0].declarations.length!==1||body[1].type!=='ReturnStatement')return;
+    const declaration=body[0].declarations[0],fields=declaration.id?.properties,result=body[1].argument;
+    if(declaration.id?.type!=='ObjectPattern'||fields.length!==1||propertyName(fields[0])!=='initializeApp'||fields[0].value.type!=='Identifier'||declaration.init?.type!=='AwaitExpression'||declaration.init.argument.type!=='ImportExpression'||result?.type!=='ObjectExpression'||result.properties.length!==1||propertyName(result.properties[0])!=='initializeApp'||result.properties[0].value.type!=='Identifier'||result.properties[0].value.name!==fields[0].value.name)return;
+    const path=declaration.init.argument.source;
+    const literal=path.type==='Literal'?path.value:path.type==='TemplateLiteral'&&!path.expressions.length?path.quasis[0].value.cooked:null;
+    if(typeof literal==='string'){const url=new URL(literal,parent).href;if(/^app:\/\/-\/assets\/app-runtime-[A-Za-z0-9_-]+\.js$/.test(url))targets.add(url);}
+  });
+  if(targets.size!==1)throw workspaceError('workspace_host_drift','A unique Native application initializer is required');
+  return[...targets][0];
+}
+export async function workspaceRuntimeReferences(read,entryUrls=currentEntries,main){
+  if(!main){
+    const entries=[...new Set(entryUrls().filter(url=>/^app:\/\/-\/assets\/index-[A-Za-z0-9_-]+\.js$/.test(url)))];
+    if(entries.length!==1)throw workspaceError('workspace_host_drift','A unique loaded Native entry is required');
+    const mainUrl=nativeRootModuleImport(await read(entries[0]),entries[0]);
+    main={mainUrl,mainSource:await read(mainUrl)};
+  }
+  main.check?.();
+  const runtimeUrl=initializedAppRuntimeReference(main.mainSource,main.mainUrl,main.proof);
+  const imports=staticModuleImports(await read(runtimeUrl),runtimeUrl);main.check?.();
+  return{...main,runtimeUrl,imports};
+}
+export async function shortcutSettingsReferences(graph, parent, read, entryUrls=currentEntries, runtime=main=>workspaceRuntimeReferences(read,entryUrls,main)) {
   const direct = assetReferences(graph, parent, 'keyboard-shortcuts-settings');
   if (direct.length) return direct;
   // New Native builds keep settings dependencies in their lazy route graph.
@@ -28,9 +98,12 @@ export async function shortcutSettingsReferences(graph, parent, read, entryUrls 
   // reading these modules does not run their initializers.
   const entries = [...new Set(entryUrls().filter(url => /^app:\/\/-\/assets\/index-[A-Za-z0-9_-]+\.js$/.test(url)))];
   if (entries.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique loaded Native entry is required');
-  const mains = assetReferences(await read(entries[0]), entries[0], 'app-main');
-  if (mains.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique Native main settings graph is required');
-  const routes = assetReferences(await read(mains[0]), mains[0], 'settings-lazy-routes');
+  const mainUrl=nativeRootModuleImport(await read(entries[0]),entries[0]);
+  const mainSource=await read(mainUrl);
+  let routes = assetReferences(mainSource, mainUrl, 'settings-lazy-routes');
+  if(!routes.length){
+    routes=(await runtime({mainUrl,mainSource})).imports.filter(url=>/^app:\/\/-\/assets\/settings-lazy-routes-[A-Za-z0-9_-]+\.js$/.test(url));
+  }
   if (routes.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique Native settings route graph is required');
   return assetReferences(await read(routes[0]), routes[0], 'keyboard-shortcuts-settings');
 }
@@ -62,8 +135,8 @@ function workspaceFunction(native, name, optional = false) {
 // One cache per provider lifetime; lazy modules never initialize in pet windows.
 export function createWorkspaceDiscovery(baseNative, { load = url => import(url), read = readWorkspaceAsset, connect = localConnection } = {}) {
   const controller = new AbortController(), sources = new Map(), modules = new Map(), moduleNamespaces = new Map();
-  let connection,assetOwnerCheck;
-  const assertOwner=()=>{controller.signal.throwIfAborted();assetOwnerCheck?.();};
+  let connection,assetOwnerCheck,runtimeOwnerCheck;
+  const assertOwner=()=>{controller.signal.throwIfAborted();assetOwnerCheck?.();runtimeOwnerCheck?.();};
   const preparations=new Map();
   const cached=(name,load)=>{assertOwner();if(!preparations.has(name))preparations.set(name,memoizeNativeLoad(load));return preparations.get(name)().then(value=>{assertOwner();return value;});};
   const source = async url => {assertOwner();if(!sources.has(url))sources.set(url,Promise.resolve().then(()=>{assertOwner();return read(url,controller.signal);}));const value=await sources.get(url);assertOwner();return value;};
@@ -93,6 +166,17 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     const [shared, initial] = await Promise.all([module(sharedUrl), module(initialUrl)]);
     checkAssets();
     return { ...native, shared, initial, sharedUrl, initialUrl, modules: moduleNamespaces };
+  });
+  const runtimeReferences=()=>cached('runtime',async()=>{
+    const root=await resolveNativeRootModule({read:source,signal:controller.signal});assertOwner();root.check();
+    runtimeOwnerCheck??=root.check;
+    return workspaceRuntimeReferences(source,currentEntries,root);
+  });
+  const primaryModules=graph=>cached('primaryModules',async()=>{
+    const native=await getCommon();let urls=assetReferences(graph,native.initialUrl,'app-primary');
+    if(!urls.length)urls=(await runtimeReferences()).imports.filter(url=>/^app:\/\/-\/assets\/app-primary-[A-Za-z0-9_-]+\.js$/.test(url));
+    if(urls.length!==1)throw workspaceError('workspace_host_drift','A unique Native primary application module is required');
+    await module(urls[0]);return urls;
   });
   const sourceSelection = async (native, select, role) => {
     const candidates = [];
@@ -156,15 +240,11 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     action: async () => { const native=await getCommon(),current=native.resolveNavigation?.()??native;if(!current.RailButton||!current.RailTooltip)throw workspaceError('workspace_action_unavailable','Native toolbar button or tooltip is unavailable');return{...native,...current,Button:current.RailButton,Tooltip:current.RailTooltip}; },
     transcript: () => cached('transcript',async () => {
       const connection=existing();await connection.ready;controller.signal.throwIfAborted();connection.check?.();
-      const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'local-conversation-thread');
-      if (!urls.length) throw workspaceError('workspace_transcript_unavailable', 'Native transcript modules are missing');
-      const candidates = await Promise.all(urls.map(async url => ({ url, source: await source(url) })));
-      const wrappers = candidates.filter(value => value.source.includes('LocalConversationSideChatTab') && !value.source.includes('retainActiveInterest'));
-      const implementations = candidates.filter(value => value.source.includes('trackReadState') && value.source.includes('retainActiveInterest'));
-      if (wrappers.length !== 1 || implementations.length !== 1) throw workspaceError('workspace_transcript_unavailable', 'The native transcript entry contract changed');
+      const native = await getCommon(), graph = await source(native.initialUrl);
+      const transcript=await transcriptModuleReferences(graph,native.initialUrl,source);
       // The semantic wrapper runs Native's own initializer. Source is never evaluated.
-      await module(wrappers[0].url);
-      await module(implementations[0].url);
+      await module(transcript.wrapper);
+      await module(transcript.implementation);
       const Content = workspaceFunction(native, 'transcriptContent');
       const Scope = workspaceFunction(native, 'scopeProvider');
       const composerScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'ComposerScope' && typeof value.id === 'symbol', 'composer scope');
@@ -172,9 +252,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       const ThreadScope=uniqueModuleExport(native.modules,value=>value?.__scopeBrand==='ThreadScope','thread scope');
       const RouteScope=uniqueModuleExport(native.modules,value=>value?.__scopeBrand==='RouteScope','route scope');
       const routeDescription=workspaceFunction(native,'routeDescription');
-      const primaryUrls = assetReferences(graph, native.initialUrl, 'app-primary');
-      if (primaryUrls.length !== 1) throw workspaceError('workspace_transcript_unavailable', 'A unique native thread subscription module is required');
-      await module(primaryUrls[0]);
+      await primaryModules(graph);
       const ThreadSubscription = workspaceFunction(native, 'threadSubscription');
       const manager = existing().manager;
       for (const method of ['getConversation', 'loadBackgroundThreadHistoryPage', 'loadRemainingTurnItems', 'addConversationStateCallback'])
@@ -203,15 +281,14 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       return{...native,Frame,check:existing};
     }),
     shortcuts: () => cached('shortcuts',async () => {
-      const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'app-primary');
-      const settingsUrls = await shortcutSettingsReferences(graph, native.initialUrl, source);
+      const native = await getCommon(), graph = await source(native.initialUrl);
+      const settingsUrls = await shortcutSettingsReferences(graph, native.initialUrl, source,currentEntries,runtimeReferences);
       if (!settingsUrls.length) throw workspaceError('workspace_shortcuts_unavailable', 'Native shortcut settings entries are unavailable');
       const settings = await Promise.all(settingsUrls.map(async url => ({ url, source: await source(url) })));
       const wrappers = settings.filter(value => value.source.includes('KeyboardShortcutsSettings') && !value.source.includes('settings.keyboardShortcuts.resetAllConfirm'));
       if (wrappers.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'The native shortcut settings entry changed');
       await module(wrappers[0].url);
-      if (urls.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique native shortcut control module is required');
-      await module(urls[0]);
+      await primaryModules(graph);
       const Capture = workspaceFunction(native, 'shortcutCapture');
       const eventAccelerator = workspaceFunction(native, 'eventAccelerator');
       const Row = workspaceFunction(native, 'settingsRow');
@@ -230,6 +307,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       if (!['windows', 'macOS', 'linux'].includes(platform)) throw workspaceError('workspace_shortcuts_unavailable', 'The native shortcut platform is unknown');
       return { ...native, Capture, Row, useCommand, dispatchKeyboard, eventAccelerator, bindings, commands, platform,
         keymap: () => {
+          assertOwner();connection.check?.();
           if (!connection.node.cachedBindings?.has(keymap)) throw workspaceError('workspace_host_pending', 'Waiting for Native to bind its shortcut keymap');
           return connection.node.store.get(keymap.resolve(connection.node, connection.chain));
         } };
