@@ -231,7 +231,9 @@ impl RuntimeUpdateOwner {
             && status.error.is_some()
             && matches!(
                 status.phase,
-                RuntimeUpdatePhase::Downloaded | RuntimeUpdatePhase::Failed
+                RuntimeUpdatePhase::Downloaded
+                    | RuntimeUpdatePhase::Deferred
+                    | RuntimeUpdatePhase::Failed
             )
         {
             self.quit_started = None;
@@ -383,5 +385,9 @@ mod tests {
             !owner.installing(),
             "blocked future updates must not block ordinary plugin management"
         );
+        owner.quit_started = Some(Instant::now());
+        status.phase = RuntimeUpdatePhase::Deferred;
+        assert!(owner.restore_management_after_terminal_failure(&status));
+        assert!(!owner.installing());
     }
 }

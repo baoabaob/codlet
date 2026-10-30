@@ -112,6 +112,15 @@ pub(super) fn prepare(
         }
         launchers.push(copied);
     }
+    // Windows system launchers can also belong to WinSxS. This command is
+    // read/hash-only; the MSI payload and copied launcher scripts stay strict.
+    let program = package::restart_program_record(&command.program)?;
+    let restart_program = CheckedPath {
+        path: command.program.canonicalize().map_err(io_error)?,
+        bytes: program.bytes,
+        sha256: program.sha256,
+        mode: program.mode,
+    };
     let mut wait_for = restart.wait_for.clone();
     let current = current_process_identity()?;
     if !wait_for.contains(&current) {
@@ -123,7 +132,7 @@ pub(super) fn prepare(
     let plan = serde_json::json!({"schema":1,"kind":"codlet-msi-install-plan","id":id,"version":staged.candidate.version,"installRoot":root,"stateRoot":state_root,
         "installer":installer,"marker":marker,"currentExecutable":current_executable,"expectedFiles":expected_files,
         "helperNode":checked(&node_path)?,"helperScript":checked(&helper_path)?,"primitives":checked(&primitives_path)?,
-        "restartProgram":checked(&command.program)?,"restart":command,"launcherFiles":launchers,"waitFor":wait_for,
+        "restartProgram":restart_program,"restart":command,"launcherFiles":launchers,"waitFor":wait_for,
         "handoffAckPath":handoff_ack_path,"officialUpdate":official_update,"activateOnNextStart":false,
         "installReceiptPath":job.join("install-receipt.json"),"summaryReceiptPath":state_root.join("runtime-update-install-receipt.json"),"createdAt":created,"expiresAt":created+30*60*1000});
     package::atomic_json(&plan_path, &plan)?;

@@ -38,7 +38,7 @@ export function validateMsiPlan(plan,planPath,expectedSha){
   if(!Array.isArray(plan.waitFor)||!plan.waitFor.length||new Set(plan.waitFor.map(value=>value.pid)).size!==plan.waitFor.length||plan.waitFor.some(value=>!Number.isSafeInteger(value.pid)||value.pid<=0||value.pid===process.pid||!/^\d+$/.test(value.creationTime)))throw fail('plan_invalid','Invalid original owner identities.');
   if(!plan.restart||!Array.isArray(plan.restart.args)||!plan.restart.environment||typeof plan.restart.environment!=='object')throw fail('plan_invalid','Missing checked restart command.');
   if(key(plan.restart.program)!==key(plan.restartProgram.path))throw fail('plan_invalid','MSI restart program changed.');
-  verify(plan.restartProgram.path,plan.restartProgram);
+  verify(plan.restartProgram.path,plan.restartProgram,true);
   for(const launcher of plan.launcherFiles){if(key(path.dirname(launcher.path))!==key(job))throw fail('plan_invalid','MSI restart helper is not owned by the transaction.');verify(launcher.path,launcher);}
   verify(plan.marker.path,plan.marker);verify(plan.currentExecutable.path,plan.currentExecutable);verify(plan.installer.path,plan.installer);
   return plan;
@@ -70,7 +70,7 @@ export async function runMsiInstall(planPath,expectedSha,onReady=()=>{},dependen
     const result=await setup('--upgrade-existing','setup-result');
     for(const file of plan.expectedFiles)verify(path.join(plan.installRoot,file.path),file);
     if(result.phase==='restartRequired'||plan.activateOnNextStart){receipt.phase='installedDeferred';receipt.restartRequired=result.phase==='restartRequired';persist();return receipt;}
-    verify(plan.restartProgram.path,plan.restartProgram);for(const file of plan.launcherFiles)verify(file.path,file);
+    verify(plan.restartProgram.path,plan.restartProgram,true);for(const file of plan.launcherFiles)verify(file.path,file);
     receipt.phase='restarting';persist();
     const code=await run(plan.restart.program,plan.restart.args,{cwd:plan.restart.workingDirectory,env:{...process.env,...plan.restart.environment},log:path.join(job,'restart')});
     if(code!==0)throw fail('msi_restart_unconfirmed','The updated Codlet launcher did not confirm readiness.');

@@ -408,6 +408,7 @@ impl LabRuntime {
                 matches!(
                     status.phase,
                     crate::runtime_update::RuntimeUpdatePhase::Downloaded
+                        | crate::runtime_update::RuntimeUpdatePhase::Deferred
                         | crate::runtime_update::RuntimeUpdatePhase::Failed
                 ) && status.error.is_some()
             })

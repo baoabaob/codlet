@@ -1,9 +1,19 @@
 # Known issues and current limits
 
-This page records the **1.0.0-rc.20 Windows x64 local candidate**, which passed
-isolated checks on Native builds 22391 and 21828. Remote publication, other
-platforms and untested interactions remain separate. The exact evidence and
-remaining scope are listed in [release readiness](release-readiness.md).
+The current Windows x64 preview is **1.0.0-rc.21**. Its Desktop HTTP correction
+and the earlier rc.20 isolated checks on Native builds 22391 and 21828 have
+separate evidence. The exact validation and remaining scope are listed in
+[release readiness](release-readiness.md).
+
+## MSI update handoff
+
+The released rc.20/rc.21 updater can reject the system PowerShell executable
+because Windows shares it with WinSxS through hard links. Installation then
+never starts, and restarting leaves the old Core running with a deferred update.
+Close the client and run the setup EXE directly to upgrade an affected install.
+The source fix allows this read-only executable while retaining its digest
+checks and the restrictions on mutable files. See the
+[observed rc.21 upgrade failure](releases/1.0.0-rc.21/validation.md#observed-natural-exit-failure).
 
 ## Client capability discovery
 

@@ -709,7 +709,8 @@ impl RuntimeUpdateService {
     pub(crate) fn prepare_deferred_install_on_exit(&self) -> Result<Option<RuntimeInstallRequest>> {
         {
             let state = self.shared.lock().unwrap();
-            if !state.deferred || state.busy {
+            if !state.deferred || state.busy || state.install_blocked || state.install_id.is_some()
+            {
                 return Ok(None);
             }
         }
@@ -766,7 +767,11 @@ impl RuntimeUpdateService {
         state.install_id = None;
         state.install_receipt = None;
         state.busy = false;
-        state.status.phase = RuntimeUpdatePhase::Downloaded;
+        state.status.phase = if state.deferred {
+            RuntimeUpdatePhase::Deferred
+        } else {
+            RuntimeUpdatePhase::Downloaded
+        };
         state.status.error = Some(error(
             "runtime_update_handoff_failed",
             message.into().chars().take(4096).collect::<String>(),
@@ -1043,10 +1048,10 @@ async fn run_command(
             state.status.error = None;
         }
         Command::PrepareDeferred { reply } => {
-            let prepared = (|| {
+            let prepared: Result<Option<RuntimeInstallRequest>> = (|| {
                 let staged = {
                     let state = shared.lock().unwrap();
-                    if !state.deferred {
+                    if !state.deferred || state.install_blocked || state.install_id.is_some() {
                         return Ok(None);
                     }
                     state.staged.clone().ok_or_else(|| {
@@ -1069,7 +1074,10 @@ async fn run_command(
                     restart,
                 )?;
                 let mut state = shared.lock().unwrap();
-                state.deferred = false;
+                // Keep the durable exit intent retryable until installation is
+                // confirmed. install_id prevents a second handoff while pending.
+                state.status.phase = RuntimeUpdatePhase::InstallRequested;
+                state.status.error = None;
                 state.install_id = Some(request.id.clone());
                 state.install_receipt = Some((
                     request.plan_path.with_file_name("install-receipt.json"),
@@ -1077,6 +1085,11 @@ async fn run_command(
                 ));
                 Ok(Some(request))
             })();
+            if let Err(failure) = &prepared {
+                let mut state = shared.lock().unwrap();
+                state.status.phase = RuntimeUpdatePhase::Deferred;
+                state.status.error = Some(failure.clone());
+            }
             let _ = reply.send(prepared);
         }
         Command::Install {
@@ -1335,6 +1348,7 @@ fn poll_install_receipt(shared: &Arc<Mutex<State>>) {
         state.status.candidate = None;
         state.candidate = None;
         state.staged = None;
+        state.deferred = false;
         state.status.error = None;
         return;
     }
@@ -1345,7 +1359,9 @@ fn poll_install_receipt(shared: &Arc<Mutex<State>>) {
         ))
     });
     if retry {
-        state.status.phase = if state.staged.is_some() {
+        state.status.phase = if state.deferred && state.staged.is_some() {
+            RuntimeUpdatePhase::Deferred
+        } else if state.staged.is_some() {
             RuntimeUpdatePhase::Downloaded
         } else {
             RuntimeUpdatePhase::Failed

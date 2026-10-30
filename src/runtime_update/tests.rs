@@ -1224,7 +1224,11 @@ fn runtime_zip_rejects_crc_errors_symlinks_and_overlapping_header_metadata() {
 #[cfg(windows)]
 #[test]
 fn helper_failure_receipt_releases_safe_candidate_but_blocks_uncertain_restart() {
-    for phase in ["failed", "rollbackBlocked"] {
+    for (phase, deferred) in [
+        ("failed", false),
+        ("failed", true),
+        ("rollbackBlocked", true),
+    ] {
         let temp = tempfile::tempdir().unwrap();
         let id = "runtime-install-fixture";
         let receipt_path = temp.path().join("install-receipt.json");
@@ -1252,12 +1256,20 @@ fn helper_failure_receipt_releases_safe_candidate_but_blocks_uncertain_restart()
             state.status.phase = RuntimeUpdatePhase::InstallRequested;
             state.install_id = Some(id.into());
             state.install_receipt = Some((receipt_path, digest));
+            state.deferred = deferred;
         }
         poll_install_receipt(&service.shared);
         let status = service.status();
         assert_eq!(status.error.unwrap().code, "owner_still_running");
         if phase == "failed" {
-            assert_eq!(status.phase, RuntimeUpdatePhase::Downloaded);
+            assert_eq!(
+                status.phase,
+                if deferred {
+                    RuntimeUpdatePhase::Deferred
+                } else {
+                    RuntimeUpdatePhase::Downloaded
+                }
+            );
         } else {
             assert_eq!(status.phase, RuntimeUpdatePhase::Failed);
             assert_eq!(
@@ -1637,6 +1649,140 @@ fn release_configuration_cannot_enable_http_or_unpinned_arbitrary_urls() {
         c.source = Some(source);
         assert!(source::UpdateClient::new(&c).is_err());
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn deferred_msi_plan_accepts_system_launcher_links_and_retries_only_unarmed_failures() {
+    use std::time::Instant;
+
+    let temp = tempfile::tempdir().unwrap();
+    let install_root = temp.path().join("installed");
+    let state_root = temp.path().join("updates");
+    std::fs::create_dir(&install_root).unwrap();
+    let fixture = |label| {
+        let (mut manifest, mut files) =
+            payload(RuntimePayloadProfile::Portable, "9.0.0", "24.21.0", label);
+        // MSI planning resolves both distributions through the production Node
+        // resolver. Supply an exact bundled pin; the fixture never executes it.
+        let mut pin: serde_json::Value =
+            serde_json::from_slice(&files["runtime/node-runtime.json"]).unwrap();
+        pin["baseUrl"] = "https://nodejs.org/download/release/v24.21.0".into();
+        pin["platforms"][PLATFORM]["archive"] = format!("node-v24.21.0-{PLATFORM}.zip").into();
+        pin["platforms"][PLATFORM]["archiveSha256"] = "a".repeat(64).into();
+        let bytes = serde_json::to_vec(&pin).unwrap();
+        let record = manifest
+            .files
+            .iter_mut()
+            .find(|file| file.path == "runtime/node-runtime.json")
+            .unwrap();
+        record.bytes = bytes.len() as u64;
+        record.sha256 = sha(&bytes);
+        files.insert(record.path.clone(), bytes);
+        (manifest, files)
+    };
+    let (_, files) = fixture("old");
+    for (name, bytes) in &files {
+        let path = install_root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    std::fs::write(
+        install_root.join("msi-install.json"),
+        br#"{"schema":1,"kind":"codlet-msi-install"}"#,
+    )
+    .unwrap();
+    let (manifest, new_files) = fixture("new");
+    let mut staged = stage(
+        &zip_payload(&manifest, &new_files, None),
+        RuntimePayloadProfile::Portable,
+        &state_root,
+    )
+    .unwrap();
+    let setup_bytes = pe("verified setup");
+    let setup_hash = sha(&setup_bytes);
+    let setup = staged
+        .directory
+        .parent()
+        .unwrap()
+        .join(format!("runtime-installer-{setup_hash}.exe"));
+    std::fs::write(&setup, &setup_bytes).unwrap();
+    staged.installer = Some(package::StagedInstaller {
+        path: setup.clone(),
+        bytes: setup_bytes.len() as u64,
+        sha256: setup_hash,
+    });
+    let program = temp.path().join("powershell.exe");
+    std::fs::write(&program, b"checked system launcher").unwrap();
+    std::fs::hard_link(&program, temp.path().join("winsxs-powershell.exe")).unwrap();
+    assert!(package::file_record(&program, "").is_err());
+    let launcher = install_root.join("Restart-Codlet.ps1");
+    std::fs::write(&launcher, b"checked restart script").unwrap();
+    let restart = RuntimeRestartContext {
+        profile: RuntimePayloadProfile::Portable,
+        command: RuntimeRestartCommand {
+            program: program.clone(),
+            args: vec![launcher.to_string_lossy().into_owned()],
+            working_directory: install_root.clone(),
+            environment: BTreeMap::new(),
+            timeout_seconds: 30,
+        },
+        wait_for: vec![],
+        launcher_files: vec![launcher],
+        config_pin: None,
+    };
+    let service =
+        RuntimeUpdateService::start(install_root.clone(), state_root.clone(), Some(restart))
+            .unwrap();
+    service.shared.lock().unwrap().staged = Some(staged);
+    service.request_install().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while service.shared.lock().unwrap().busy && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(service.status().phase, RuntimeUpdatePhase::Deferred);
+
+    // An invalid mutable input fails before handoff, preserves the exit intent,
+    // and publishes the actual contract error for a subsequent exit attempt.
+    let linked_setup = state_root.join("linked-setup.exe");
+    std::fs::hard_link(&setup, &linked_setup).unwrap();
+    assert_eq!(
+        service.prepare_deferred_install_on_exit().unwrap_err().code,
+        "runtime_update_path_invalid"
+    );
+    assert_eq!(service.status().phase, RuntimeUpdatePhase::Deferred);
+    assert_eq!(
+        service.status().error.unwrap().code,
+        "runtime_update_path_invalid"
+    );
+    std::fs::remove_file(linked_setup).unwrap();
+    let request = service.prepare_deferred_install_on_exit().unwrap().unwrap();
+    let plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&request.plan_path).unwrap()).unwrap();
+    assert_eq!(plan["kind"], "codlet-msi-install-plan");
+    assert_eq!(plan["activateOnNextStart"], true);
+    assert_eq!(plan["officialUpdate"], false);
+    assert_eq!(
+        plan["restartProgram"]["sha256"],
+        package::restart_program_record(&program).unwrap().sha256
+    );
+    assert!(request.activate_on_next_start);
+    assert!(
+        service
+            .prepare_deferred_install_on_exit()
+            .unwrap()
+            .is_none()
+    );
+    assert!(!request.handoff_ack_path.exists());
+    assert!(service.install_handoff_failed(&request.id, "unarmed helper failed"));
+    assert_eq!(service.status().phase, RuntimeUpdatePhase::Deferred);
+    let retry = service.prepare_deferred_install_on_exit().unwrap().unwrap();
+    assert_ne!(retry.id, request.id);
+    assert!(state_root.join("runtime-update-next-start.json").exists());
+    assert_eq!(
+        std::fs::read(install_root.join("codlet.exe")).unwrap(),
+        files["codlet.exe"]
+    );
 }
 
 #[cfg(windows)]

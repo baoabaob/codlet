@@ -55,9 +55,9 @@ function digest(file, allowHardLinks = false) {
   if (count !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs) throw fail('payload_changed', 'Runtime payload changed while hashing.');
   return { bytes: count, sha256: hash.digest('hex') };
 }
-function verify(file, record) {
+function verify(file, record, allowHardLinks = false) {
   if (!sha(record.sha256) || !Number.isSafeInteger(record.bytes) || record.bytes < 0) throw fail('plan_invalid', 'Invalid runtime file identity.');
-  const actual = digest(file);
+  const actual = digest(file, allowHardLinks);
   if (actual.bytes !== record.bytes || actual.sha256 !== record.sha256) throw fail('payload_changed', 'Runtime payload no longer matches the checked installation plan.');
 }
 function writeJson(file, data) {

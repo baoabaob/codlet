@@ -21,7 +21,10 @@ cannot be combined with a module list; it does not change the complete package.
 The rc.20 MSI updater clears its resident selector and always chooses the
 complete artifact. Building an exact-base source-only ZIP from an MSI directory
 does not override that running updater rule; matching portable owners can select
-the artifact, while MSI owners stage the setup EXE for natural exit.
+the artifact, while MSI owners stage the setup EXE for natural exit. Released
+rc.20/rc.21 MSI handoff also rejects a system PowerShell executable shared with
+WinSxS through hard links. Affected installations require direct setup execution
+after the client exits; restarting alone leaves the update staged.
 
 A Windows runtime manifest can include `online` with `schema: 1`, `bridgeProtocol: 1`, exact `bridgeSha256` and `bootstrapSha256`, and `clientSourcePath: "runtime/core-modules/client-source.cjs"`. The source must be in the manifest file list with its size and SHA-256. It is limited to 1 MiB. Optional `modules` entries bind each fixed ID to `runtime/core-modules/<id>.js` or `.cjs`, with `moduleAbi: 1` and each file limited to 8 MiB. Unknown IDs, mismatched ID/path pairs, duplicates and arbitrary JavaScript paths are rejected.
 
@@ -62,6 +65,14 @@ Unknown and rolled-back lifecycle completions preserve the first eight target fa
 ## Deferred installation
 
 Complete installation requests stage incompatible updates with `phase: "deferred"`, `activation.mode: "nextStart"` and a pinned `runtime-update-next-start.json` intent. They emit no generic install request, quit call or launcher command. On successful natural Native exit, the owned probe, lab or macOS lifecycle can prepare a fresh checked helper plan marked `activateOnNextStart`. The helper waits for the exact owner identities to retire, installs the candidate, and returns `installedDeferred` without launching a Native process. Portable/macApp helpers replace their own files; Windows MSI installations use the verified setup EXE from the same release, preserving Windows Installer's ownership, scope and feature choices. An explicitly requested restart remains a separate API/action.
+
+The current source permits hard links for the checked, read-only system restart
+executable in both MSI plan preparation and helper validation, as the portable
+path already does. Its digest is checked again before launch. Installer payloads,
+copied launcher scripts and mutable update files retain strict link rejection.
+The deferred intent remains pending until installation is confirmed; a pending
+transaction ID prevents duplicate handoff, and a failure before helper arming
+preserves a later exit attempt and reports the actual error.
 
 The write ledger records explicit Core/plugin writes only. Cancelled or failed Core operations without a determinate result stay `unknown`, including after late replies, and an unsettled drain defers the Core update. Native HTTP requests, backend sends and renderer messages do not enter that ledger or wait for Core admission. A stalled or failed Core handoff keeps Native forwarding through the current plugin hooks, or its original transport while hooks retire. Native errors and cancellation belong to Native. Core source preparation failures may fall through only before dispatch; an upstream request that has already started is never replayed. Response bodies and task routes survive source retirement.
 

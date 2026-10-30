@@ -97,6 +97,35 @@ confirmed all **18,721,851 bytes** (runtime plus setup), `phase: deferred`,
 `persistencePending: false`. The matching next-start intent is persisted. Both
 temporary helpers were removed after their receipts were retained.
 
-This is confirmed staging for natural exit, not completed MSI installation or
-post-upgrade UI recovery. The user-controlled client has not been closed by the
-repair workflow.
+This confirmed staging, not completed MSI installation or post-upgrade UI
+recovery. The subsequent user-controlled exit exposed the handoff defect below.
+
+## Observed natural-exit failure
+
+On 2026-10-30 the user closed Native normally and launched Codlet again. The
+previous owner logged a deferred preparation failure because a checked path
+contained links, followed by Native exit code 0. No installer had started. The
+new owner still reported rc.20 and restored the same rc.21 deferred intent.
+
+The rejected file was Windows' own `powershell.exe`, which has two hard links
+including its WinSxS copy. MSI plan preparation used the strict mutable-payload
+validator for this read-only restart executable; the MSI JavaScript helper had
+the same error. The portable updater already allowed this system-file layout.
+
+The source fix applies the read-only restart validator in both MSI layers and
+rechecks the executable digest before launch. It retains strict checks for the
+installer, current Core, marker and copied launcher scripts. Deferred intent
+survives unarmed preparation/handoff failures, while the pending transaction ID
+prevents a second handoff. These changes are subsequent to the published rc.21
+package and cannot repair an already running rc.20 updater in place.
+
+Post-release validation passes **27** portable/MSI helper tests and **3**
+targeted Rust tests. These cover hard-linked read-only restart executables,
+strict rejection of mutable hard links, digest rechecks before restart, actual
+deferred MSI plan construction, pending-transaction deduplication, safe failure
+retry and management recovery. Formatting and diff checks also pass.
+
+The published rc.21 setup passed `--validate-upgrade` against the actual
+per-user installation and returned `phase: ready`. Direct setup execution after
+the client exits is the recovery path; completed installation and authenticated
+UI recovery still require their own receipts.
