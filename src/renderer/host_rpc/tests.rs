@@ -60,7 +60,7 @@ impl Fixture {
                 __directProvider.completions++;
                 return {received:true};
               });
-            };"#).unwrap();
+            };exports.deactivate=()=>{delete globalThis.__directProvider};"#).unwrap();
             registry
                 .register_local(
                     "test.renderer.provider",
@@ -106,6 +106,11 @@ impl Fixture {
         assert!(
             reports.iter().all(|(_, result)| result.is_ok()),
             "{reports:?}"
+        );
+        assert!(
+            renderer.diagnostics.is_empty(),
+            "{:?}",
+            renderer.diagnostics
         );
         let inspected = peer.request("Fixture.inspect", json!({"keys":[]}));
         let realm = inspected["contexts"]
