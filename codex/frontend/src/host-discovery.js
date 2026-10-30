@@ -147,6 +147,26 @@ export function loadedAsset(role) {
   if (candidates.length !== 1) throw fail(candidates.length ? 'desktop_asset_ambiguous' : 'ui_host_pending', `A unique loaded Desktop ${role} module is required`);
   return candidates[0];
 }
+const ownData=(value,key)=>Object.getOwnPropertyDescriptor(value??{},key)?.value;
+function nativeLocalProducer(family,token,role){
+  const kind=ownData(family,'kind');
+  // Native's writable family owns this resource. A readable family can project
+  // the same HostClient or request client without becoming another producer.
+  if(kind==='readable-family')return null;
+  const read=ownData(family,'read'),resolve=ownData(family,'resolve');
+  if(kind!=='signal-family'||ownData(family,'scope')!==token||typeof read!=='function'||typeof resolve!=='function')throw fail('desktop_scope_contract_drift',`Native ${role} producer contract changed`);
+  return{family,token,read,resolve};
+}
+function currentLocalProducer(proof){
+  return ownData(proof.family,'kind')==='signal-family'&&ownData(proof.family,'scope')===proof.token&&ownData(proof.family,'read')===proof.read&&ownData(proof.family,'resolve')===proof.resolve;
+}
+function unreadyHostClientProducer({family,value},token){
+  if(!value||typeof value!=='object')return false;
+  const keys=Reflect.ownKeys(value);
+  // Native's HostClient publisher clears the client during unavailable,
+  // disconnected and replaced states. Loading belongs to the derived view.
+  return keys.every(name=>name==='status'||name==='client')&&ownData(value,'client')===null&&['unavailable','disconnected','replaced'].includes(ownData(value,'status'))&&!!nativeLocalProducer(family,token,'HostClient');
+}
 export function localConnection() {
   desktopDocument();
   const fibers = hostFibers();
@@ -165,7 +185,7 @@ export function localConnection() {
         bound.push({ family, value, bindings, binding: bindings.get('local') });
       }
       for (const { family: managerFamily, value: manager } of bound) {
-        if (typeof manager?.getHostId !== 'function' || manager.getHostId() !== 'local' || typeof manager.getConversation !== 'function') continue;
+        if (!manager || typeof manager!=='object' || typeof manager.getHostId !== 'function' || manager.getHostId() !== 'local' || typeof manager.getConversation !== 'function') continue;
         const client = manager.requestClient;
         const clients = bound.filter(item => item.value === client && typeof client?.sendRequest === 'function' &&
           typeof client.getAppServerVersion === 'function' && typeof client.setAppServerVersion === 'function' && client.requestPromises instanceof Map);
@@ -175,13 +195,24 @@ export function localConnection() {
           throw fail('desktop_scope_ambiguous', 'Desktop connection has multiple owners');
         matches.set(manager, { node, chain, managerFamily, clientFamily: clients[0].family, manager, client });
       }
-      const clients = bound.filter(({ value }) => typeof value?.sendRequest === 'function' &&
-        typeof value.getAppServerVersion === 'function' && typeof value.setAppServerVersion === 'function' && value.requestPromises instanceof Map);
-      for (const item of bound) {
-        const state = item.value, hostClient = state?.client;
+      const ready=bound.filter(({value})=>ownData(value,'status')==='ready'&&ownData(ownData(value,'client'),'hostId')==='local'&&typeof ownData(ownData(value,'client'),'rpc')==='function');
+      if(!ready.length)continue;
+      const managers=ready.map(item=>({...item,producer:nativeLocalProducer(item.family,node.token,'HostClient')})).filter(item=>item.producer);
+      if(!managers.length){
+        const unready=bound.some(item=>unreadyHostClientProducer(item,node.token));
+        if(unready)continue;
+        throw fail('desktop_scope_contract_drift','Native ready HostClient has no local producer');
+      }
+      const requestClients=bound.filter(({ value }) => value&&typeof value==='object'&&ownData(value,'requestPromises') instanceof Map&&typeof value.sendRequest === 'function' &&
+        typeof value.getAppServerVersion === 'function' && typeof value.setAppServerVersion === 'function');
+      const clients=requestClients.map(item=>({...item,producer:nativeLocalProducer(item.family,node.token,'request client')})).filter(item=>item.producer);
+      for (const item of managers) {
+        const state = item.value, hostClient = state.client,managerProducer=item.producer;
         // This is Native's existing HostClient resource, not an arbitrary RPC
         // proxy matched by method names (its every property can be callable).
-        if (state?.status !== 'ready' || hostClient?.hostId !== 'local' || typeof hostClient.rpc !== 'function' || clients.length !== 1 || clients[0].value.hostId !== 'local') continue;
+        if(clients.length>1)throw fail('desktop_scope_ambiguous','Native request client has multiple producers');
+        if(!clients.length){if(requestClients.length)throw fail('desktop_scope_contract_drift','Native request client has no local producer');continue;}
+        if(clients[0].value.hostId!=='local')throw fail('desktop_scope_contract_drift','Native request client producer host changed');
         const clientItem = clients[0], client = clientItem.value;
         const previous = matches.get(hostClient.rpc);
         if (previous) {
@@ -190,7 +221,7 @@ export function localConnection() {
           continue;
         }
         matches.set(hostClient.rpc, { node, chain, managerFamily: item.family, clientFamily: clientItem.family,
-          hostClient, rpc: hostClient.rpc, managerBinding: item.binding, clientBinding: clientItem.binding, client });
+          hostClient, rpc: hostClient.rpc, managerBinding: item.binding, clientBinding: clientItem.binding, managerProducer,clientProducer:clientItem.producer,client });
       }
     }
   }
@@ -200,11 +231,12 @@ export function localConnection() {
     desktopDocument();
     const { node, chain } = locate(), { managerFamily, clientFamily, manager, client } = connection;
     if (connection.rpc && manager?.error) throw manager.error;
+    if(connection.rpc&&(!currentLocalProducer(connection.managerProducer)||!currentLocalProducer(connection.clientProducer)))throw fail('desktop_connection_replaced','Native local producer changed');
     const managerBindings = node.familyBindings.get(managerFamily), clientBindings = node.familyBindings.get(clientFamily);
     const managerCurrent = managerBindings?.has('local') && managerFamily.read(node, chain, 'local');
     const clientCurrent = clientBindings?.has('local') && clientFamily.read(node, chain, 'local');
     const current = connection.rpc ? managerBindings?.get('local') === connection.managerBinding && clientBindings?.get('local') === connection.clientBinding &&
-      managerCurrent?.status === 'ready' && managerCurrent.client === connection.hostClient && connection.hostClient.rpc === connection.rpc :
+      managerCurrent?.status === 'ready' && managerCurrent.client === connection.hostClient && connection.hostClient.hostId==='local'&&connection.hostClient.rpc === connection.rpc&&client.hostId==='local' :
       managerCurrent === manager && manager.getHostId() === 'local' && manager.requestClient === client;
     if (!current || clientCurrent !== client)
       throw fail('desktop_connection_replaced', 'The existing local Desktop connection was replaced');

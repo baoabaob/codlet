@@ -144,6 +144,7 @@ function rpcFixture() {
     rpc[Symbol.dispose]=()=>{throw Error('Native RPC must stay owned by Native');};
     const hostClient={hostId:'local',rpc},state={status:'ready',client:hostClient};
     f.client.hostId='local';f.managerFamily.read=()=>state;f.node.familyBindings.get(f.managerFamily).set('local',state);
+    for(const family of [f.managerFamily,f.clientFamily]){family.kind='signal-family';family.resolve=(node,chain,key)=>node.familyBindings.get(family).get(key);}
     return{state,hostClient,rpc,calls,subscriptions};
   })()`,f.context);
   return{...f,state};
@@ -202,6 +203,63 @@ test('RPC discovery proves the current same-scope HostClient and request client 
   assert.equal(f.state.calls.some(value=>value.startsWith('getConversation:')),false);
   f.native.node.familyBindings.get(f.native.managerFamily).set('local',{...f.state.state});
   assert.throws(()=>connection.check(),{code:'desktop_connection_replaced'});await connection.dispose();
+});
+test('derived ready-state and request-client aliases cannot add or retire Native producer ownership',async()=>{
+  const f=rpcFixture(),connection=await f.probe();f.context.aliasHost=f.state.hostClient;
+  vm.runInContext(`(()=>{const f=fixtureNative;
+    const add=value=>{const family={scope:f.token,kind:'readable-family',read:()=>value,resolve:()=>value};f.node.familyBindings.set(family,new Map([['local',{}]]));return family;};
+    derivedHost=add({hostId:'local',status:'ready',client:aliasHost});derivedClient=add(f.client);
+  })()`,f.context);
+  connection.check();const next=vm.runInContext('localConnection()',f.context);await next.ready;assert.equal(next.managerFamily,f.native.managerFamily);assert.equal(next.clientFamily,f.native.clientFamily);
+  vm.runInContext(`derivedHost.read=()=>({hostId:'local',status:'disconnected',client:null});`,f.context);
+  connection.check();next.check();await connection.dispose();await next.dispose();
+});
+test('multiple actual local producers remain ambiguous even when they return the same object',async()=>{
+  for(const role of ['manager','client']){
+    const f=rpcFixture();f.context.aliasHost=f.state.hostClient;
+    vm.runInContext(`(()=>{const f=fixtureNative,value=${role==='manager'?"{status:'ready',client:aliasHost}":'f.client'},family={scope:f.token,kind:'signal-family',read:()=>value,resolve:()=>value};f.node.familyBindings.set(family,new Map([['local',{}]]));})()`,f.context);
+    await assert.rejects(f.probe(),{code:'desktop_scope_ambiguous'});
+  }
+});
+test('a second real AppScope cannot claim the same Native RPC capability',async()=>{
+  const f=rpcFixture();f.context.aliasHost=f.state.hostClient;
+  vm.runInContext(`(()=>{const f=fixtureNative,token={id:Symbol(),__scopeBrand:'AppScope'},state={status:'ready',client:aliasHost},client={...f.client,requestPromises:new Map()},managerFamily={scope:token,kind:'signal-family',read:()=>state,resolve:()=>state},clientFamily={scope:token,kind:'signal-family',read:()=>client,resolve:()=>client},node={token,familyBindings:new Map([[managerFamily,new Map([['local',{}]])],[clientFamily,new Map([['local',{}]])]])};f.chain.set(token.id,node);})()`,f.context);
+  await assert.rejects(f.probe(),{code:'desktop_scope_ambiguous'});
+});
+test('ready RPC producer contract errors stay explicit instead of becoming initialization waits',async()=>{
+  for(const [role,key,value]of [['manager','kind','unknown-family'],['manager','kind','readable-family'],['manager','resolve',null],['client','kind','unknown-family'],['client','kind','readable-family'],['client','resolve',null]]){
+    const f=rpcFixture();f.native[role==='manager'?'managerFamily':'clientFamily'][key]=value;
+    await assert.rejects(f.probe(),{code:'desktop_scope_contract_drift'});
+  }
+});
+test('an explicitly unready HostClient producer is not promoted by a stale derived ready projection',async()=>{
+  const f=rpcFixture();f.state.state.status='unavailable';f.state.state.client=null;f.context.aliasHost=f.state.hostClient;
+  vm.runInContext(`(()=>{const f=fixtureNative,family={scope:f.token,kind:'readable-family',read:()=>({status:'ready',client:aliasHost}),resolve(){}};f.node.familyBindings.set(family,new Map([['local',{}]]));})()`,f.context);
+  await assert.rejects(f.probe(),{code:'desktop_connection_not_ready'});
+});
+test('unrelated status records and incomplete producer contracts cannot hide a missing ready HostClient producer',async()=>{
+  for(const sample of ["{status:'anything',client:null}","{status:'loading',client:null}","{status:'unavailable',client:{}}","{status:'unavailable',client:null,extra:true}","{status:'unavailable',client:null}"]){
+    const f=rpcFixture();f.native.managerFamily.kind='readable-family';
+    vm.runInContext(`(()=>{const value=${sample},family={scope:fixtureNative.token,kind:'signal-family',read:()=>value,resolve:${sample==="{status:'unavailable',client:null}"?'null':'()=>value'}};fixtureNative.node.familyBindings.set(family,new Map([['local',{}]]));})()`,f.context);
+    await assert.rejects(f.probe(),{code:'desktop_scope_contract_drift'});
+  }
+});
+test('a callable RPC value is never probed by invoking legacy manager methods',async()=>{
+  const f=rpcFixture();
+  const observed=vm.runInContext(`(()=>{const calls={reads:0,invoked:0},rpc=new Proxy(function(){},{get(target,key){if(key==='getHostId'){calls.reads++;return()=>{calls.invoked++;throw Error('unexpected Native RPC');};}return Reflect.get(target,key);}}),family={scope:fixtureNative.token,kind:'readable-family',read:()=>rpc,resolve:()=>rpc};fixtureNative.node.familyBindings.set(family,new Map([['local',{}]]));return calls;})()`,f.context);
+  const connection=await f.probe();assert.equal(observed.reads,0);assert.equal(observed.invoked,0);await connection.dispose();
+});
+test('captured Native producers retire on kind, resolver, binding, client or RPC replacement',async()=>{
+  for(const changed of ['kind','resolver','manager-binding','client-binding','client','rpc']){
+    const f=rpcFixture(),connection=await f.probe();
+    if(changed==='kind')f.native.managerFamily.kind='readable-family';
+    else if(changed==='resolver')f.native.clientFamily.resolve=()=>null;
+    else if(changed==='manager-binding')f.native.node.familyBindings.get(f.native.managerFamily).set('local',{});
+    else if(changed==='client-binding')f.native.node.familyBindings.get(f.native.clientFamily).set('local',{});
+    else if(changed==='client')f.native.clientFamily.read=()=>({...f.native.client});
+    else f.state.hostClient.rpc=function replacement(){};
+    assert.throws(()=>connection.check(),{code:'desktop_connection_replaced'});await connection.dispose();
+  }
 });
 test('RPC Desktop installs owned subscriptions and snapshots only the selected view, with metadata-only loaded pages',async()=>{
   const f=rpcFixture(),connection=await f.probe(),endpoints=new Map();
