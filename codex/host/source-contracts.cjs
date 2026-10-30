@@ -98,7 +98,7 @@ function supportsRole(Constructor, role, recorded = false) {
 }
 function sourceCandidates(record, profiles, expectedHashes) {
   const candidates = [];
-  const add = (role, binding, recorded, read) => candidates.push({role, binding, recorded,
+  const add = (role, binding, recorded, read) => candidates.push({role, binding, recorded,live:record.live,
     read:read ?? (() => record.evaluate(binding)), resolved:null});
   if (Object.hasOwn(expectedHashes, record.name) && record.hash === expectedHashes[record.name]) {
     const profile = profiles[record.name] ?? {kind:record.name.startsWith('bootstrap-')?'bootstrap':record.name.startsWith('main-')?'main':'src',

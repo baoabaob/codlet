@@ -9,6 +9,7 @@ const { connectPlaintextSource } = require('./plaintext-source-client.cjs');
 const { createWriteLedger, snapshotJson } = require('./online-update.cjs');
 const { createSkillRootFacts } = require('./skill-roots.cjs');
 const acorn = require('acorn');
+const {analyze} = require('eslint-scope');
 const MAX_FRAME = 2 * 1024 * 1024;
 const fail = code => Object.assign(new Error(code), { code });
 const label = value => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(value);
@@ -23,35 +24,61 @@ async function bounded(operation, code, timeoutMs = 10000) {
 }
 
 function describeClasses(ast) {
-  const bindings = new Set(), classes = new Map();
-  for (const node of ast.body) {
-    if (node.type === 'VariableDeclaration') for (const item of node.declarations) if (item.id.type === 'Identifier') bindings.add(item.id.name);
-    if (node.type === 'ClassDeclaration' && node.id) bindings.add(node.id.name);
-  }
-  const add = (name, node) => {
-    if (!bindings.has(name) || !/^[A-Za-z_$][\w$]*$/u.test(name)) return;
+  const tree=ast.type==='Program'?ast:{type:'Program',body:ast.body,sourceType:'script',range:[ast.start,ast.end]},
+    scopes=analyze(tree,{ecmaVersion:2025,sourceType:'script',optimistic:false,ignoreEval:false}),
+    bindings=new Set(scopes.globalScope.variables),declarations=new WeakMap(),references=new WeakMap(),classes=new Map();
+  for(const variable of bindings)for(const definition of variable.defs)declarations.set(definition.node,variable);
+  for(const scope of scopes.scopes)for(const reference of scope.references)if(reference.resolved)references.set(reference.identifier,reference.resolved);
+  const add = (binding, node) => {
+    if (!bindings.has(binding) || !/^[A-Za-z_$][\w$]*$/u.test(binding.name)) return;
     const methods = node.body.body.filter(item => item.type === 'MethodDefinition' && !item.static && item.kind === 'method')
       .map(item => !item.computed && item.key.type === 'Identifier' ? item.key.name : item.key.type === 'Literal' && typeof item.key.value === 'string' ? item.key.value : null)
       .filter(value => value !== null);
-    if (methods.length) classes.set(name, { binding: name, methods });
+    if (methods.length) {const previous=classes.get(binding.name);classes.set(binding.name,{binding:binding.name,methods:[...new Set([...(previous?.methods??[]),...methods])]});}
   };
   walkAst(ast, node => {
-    if (node.type === 'ClassDeclaration' && node.id) add(node.id.name, node);
-    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init?.type === 'ClassExpression') add(node.id.name, node.init);
-    if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && node.right.type === 'ClassExpression') add(node.left.name, node.right);
+    if (node.type === 'ClassDeclaration' && node.id) add(declarations.get(node), node);
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init?.type === 'ClassExpression') add(declarations.get(node), node.init);
+    if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && node.right.type === 'ClassExpression') add(references.get(node.left), node.right);
   });
   return [...classes.values()];
 }
-function walkAst(root, visit) {
+function walkAst(root, visit, boundary = () => false) {
   const pending=[root],seen=new Set();
   while(pending.length) {
     const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;
-    seen.add(node);visit(node);
+    seen.add(node);visit(node);if(boundary(node))continue;
     for(const [name,child] of Object.entries(node))if(name!=='start'&&name!=='end') {
       if(Array.isArray(child))for(const item of child)pending.push(item);else if(child&&typeof child==='object')pending.push(child);
     }
   }
 }
+
+// These are CommonJS chunk exports, not arbitrary nested object methods. Native
+// supplies the module, exports and require objects when it executes a factory.
+function chunkFactories(ast) {
+  const factories=[];
+  for(const statement of ast.body) {
+    const pending=[statement.type==='ExpressionStatement'?statement.expression:null];
+    while(pending.length) {
+      const node=pending.pop();
+      if(node?.type==='SequenceExpression'){pending.push(...node.expressions);continue;}
+      const target=node?.type==='AssignmentExpression'&&node.operator==='='?node.left:null;
+      if(target?.type!=='MemberExpression'||target.computed||target.object.type!=='Identifier'||target.object.name!=='exports'||
+        target.property.name!=='modules'||node.right.type!=='ObjectExpression')continue;
+      for(const property of node.right.properties) {
+        const factory=property.type==='Property'&&!property.computed&&property.kind==='init'?property.value:null;
+        const id=property.key?.type==='Literal'?property.key.value:property.key?.name;
+        if(!/^(?:0|[1-9][0-9]*)$/.test(String(id))||factory?.type!=='FunctionExpression'||factory.async||factory.generator||
+          factory.params.length!==3||factory.params.some(parameter=>parameter.type!=='Identifier'))continue;
+        const classes=describeClasses(factory.body);
+        if(classes.length)factories.push({id:String(id),body:factory.body,parameters:factory.params.map(parameter=>parameter.name),classes});
+      }
+    }
+  }
+  return factories;
+}
+const ownValue=(object,key)=>object!=null?Object.getOwnPropertyDescriptor(object,key)?.value:undefined;
 
 function observeModules(root, key, dependencies = {}) {
   // Native require resolves directory aliases (for example /var -> /private/var
@@ -60,21 +87,67 @@ function observeModules(root, key, dependencies = {}) {
   const prototype = dependencies.prototype ?? Module.prototype;
   const original = prototype._compile;
   const records = new Map(), subscribers = new Set(), instances = new Set(), observedInstances = new WeakSet();
+  const factoryOwners=new WeakMap(),factoryStates=new Map(),runtimeIds=new WeakMap(),factoryWrappers=new Set(),activeTables=new Set();let nextRuntimeId=0;
   const finalized=new FinalizationRegistry(ref=>instances.delete(ref));
   let closed = false;
   const inScope = filename => typeof filename === 'string' && roots.some(root => {
     const relative = path.relative(root, filename);
     return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
   });
+  const notify=record=>{for(const callback of subscribers){try{callback(record);}catch{/* Observation cannot abort Native loading. */}}};
+  const retire=state=>{if(!state.live)return;state.live=false;factoryStates.delete(state.key);const record=records.get(state.key);if(record){records.delete(state.key);notify(Object.freeze({...record,retired:true}));}};
+  const current=state=>{try{return !closed&&state.live&&ownValue(state.require,'c')===state.cache&&
+    ownValue(state.cache,state.id)===state.module&&(!state.completed||ownValue(state.module,'exports')===state.exported);}catch{return false;}};
+  const prune=()=>{for(const state of factoryStates.values())if(!current(state))retire(state);};
   const registry = Object.freeze({
-    register(filename, hash, exported, evaluate, classes = []) {
+    register(filename, hash, exported, evaluate, classes = [], live = () => !closed) {
       if (closed || typeof evaluate !== 'function') return;
       const descriptions = Object.freeze(classes.map(item => Object.freeze({binding:item.binding, methods:Object.freeze([...item.methods])})));
-      const record = Object.freeze({ filename, name: path.basename(filename), hash, exported, evaluate, classes:descriptions });
+      const record = Object.freeze({ filename, name: path.basename(filename), hash, exported, evaluate, classes:descriptions,live });
       records.set(filename, record);
-      for (const callback of subscribers) { try {callback(record);}catch{/* Plugin observation must not abort native module loading. */} }
+      notify(record);
     },
-    list: () => [...records.values()],
+    captureFactory(module, evaluator) {const state=module&&factoryOwners.get(module);if(state&&typeof evaluator==='function')state.evaluate=evaluator;},
+    observeFactories(filename,hash,exported,descriptions) {
+      if(closed)return;
+      let table;try{table=ownValue(exported,'modules');}catch{return;}if(!table||typeof table!=='object')return;
+      for(const description of descriptions) {
+        let descriptor;try{descriptor=Object.getOwnPropertyDescriptor(table,description.id);}catch{continue;}const factory=descriptor?.value;
+        if(typeof factory!=='function'||!descriptor.writable)continue;
+        const wrapper=new Proxy(factory,{apply(target,self,args) {
+          if(closed)return Reflect.apply(target,self,args);
+          const [module,,require]=args;let cache,active,owned=false;
+          try{cache=ownValue(require,'c');active=ownValue(require,'m');owned=module&&typeof module==='object'&&cache&&active&&
+            ownValue(module,'exports')===args[1]&&ownValue(cache,description.id)===module&&ownValue(active,description.id)===wrapper;}catch{/* An opaque Native owner is not observed. */}
+          if(!owned)return Reflect.apply(target,self,args);
+          let state;
+          try{
+            activeTables.add(active);
+            if(!runtimeIds.has(require))runtimeIds.set(require,++nextRuntimeId);
+            const key=filename+'#webpack:'+description.id+':'+runtimeIds.get(require),previous=factoryStates.get(key);
+            if(previous)retire(previous);
+            state={key,id:description.id,module,require,cache,table:active,wrapper,live:true,evaluate:null};
+            factoryStates.set(key,state);factoryOwners.set(module,state);
+          }catch{return Reflect.apply(target,self,args);}
+          let result,error;
+          try{result=Reflect.apply(target,self,args);}catch(value){error=value;state.failed=true;}
+          factoryOwners.delete(module);
+          try{
+            state.exported=ownValue(module,'exports');state.completed=true;
+            if(current(state)&&state.evaluate)registry.register(state.key,hash,state.exported,expression=>{
+              if(!current(state)){retire(state);throw fail('client_bridge_factory_retired');}
+              if(state.failed)throw fail('client_bridge_factory_failed');
+              try{return state.evaluate(expression);}catch(value){if(value?.name==='ReferenceError')throw fail('client_bridge_factory_binding_unavailable');throw value;}
+            },description.classes,()=>current(state));
+            else retire(state);
+          }catch{retire(state);}
+          if(state.failed)throw error;
+          return result;
+        }});
+        try{Object.defineProperty(table,description.id,{...descriptor,value:wrapper});factoryWrappers.add({table,id:description.id,descriptor,wrapper});}catch{/* A frozen table is unavailable to observation. */}
+      }
+    },
+    list: () => {prune();return [...records.values()];},
     instance(value) {
       if(closed||!value||typeof value!=='object'||observedInstances.has(value))return;
       observedInstances.add(value);const ref=new WeakRef(value);instances.add(ref);finalized.register(value,ref);
@@ -82,15 +155,20 @@ function observeModules(root, key, dependencies = {}) {
     instances(Constructor) { const result=[];for(const ref of instances){const value=ref.deref();if(!value)instances.delete(ref);else if(typeof Constructor==='function'&&value instanceof Constructor)result.push(value);}return result; },
     subscribe(callback) {
       if (closed || typeof callback !== 'function') throw fail('client_bridge_closed');
-      subscribers.add(callback);
+      prune();subscribers.add(callback);
       for (const record of records.values()) callback(record);
       let live = true;
       return () => { if (live) { live = false; subscribers.delete(callback); } };
     },
-    inspect: () => ({ modules: records.size, subscribers: subscribers.size, instanceReferences:instances.size,instanceDrops:0 }),
+    inspect: () => {prune();return ({ modules: records.size, subscribers: subscribers.size, instanceReferences:instances.size,instanceDrops:0 });},
     close() {
       if (closed) return;
-      closed = true; subscribers.clear(); records.clear();instances.clear();
+      closed = true; subscribers.clear(); records.clear();instances.clear();factoryStates.clear();
+      for(const {table,id,descriptor,wrapper}of factoryWrappers)for(const target of new Set([table,...activeTables]))try{
+        const current=Object.getOwnPropertyDescriptor(target,id);
+        if(current?.value===wrapper)Object.defineProperty(target,id,{...current,value:descriptor.value});
+      }catch{/* Native retains ownership of a changed or frozen table. */}
+      factoryWrappers.clear();activeTables.clear();
       if (prototype._compile === compile) prototype._compile = original;
       if (globalThis[key] === registry) delete globalThis[key];
     },
@@ -99,13 +177,21 @@ function observeModules(root, key, dependencies = {}) {
     if (closed || typeof code !== 'string' || !inScope(filename)) return original.call(this, code, filename);
     const hash = createHash('sha256').update(code).digest('hex');
     const reference=`globalThis[Symbol.for(${JSON.stringify(Symbol.keyFor(key))})]`;
-    const edits=[]; let classes=[];
+    const edits=[]; let classes=[],factories=[],expressionName='__codletExpression';
     try {
-      const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true});
+      const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true,ranges:true});
+      const identifiers=new Set();walkAst(ast,node=>{if(node.type==='Identifier')identifiers.add(node.name);});
+      while(identifiers.has(expressionName))expressionName+='_';
       classes=describeClasses(ast);
+      factories=chunkFactories(ast);
+      for(const factory of factories) {
+        const directives=factory.body.body.filter((node,index,nodes)=>node.type==='ExpressionStatement'&&typeof node.directive==='string'&&nodes.slice(0,index).every(value=>typeof value.directive==='string'));
+        const at=directives.at(-1)?.end??factory.body.start+1;
+        edits.push({at,text:`;${reference}?.captureFactory(${factory.parameters[0]},(${expressionName})=>eval(${expressionName}));`});
+      }
       walkAst(ast,node=>{if(node.type==='MethodDefinition'&&node.kind==='constructor')edits.push({at:node.value.body.end-1,text:`;${reference}?.instance(this);`});});
     } catch { /* Unsupported syntax still uses the scoped module resolver. */ }
-    const registration = `\n;${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(expression)=>eval(expression),${JSON.stringify(classes)});`;
+    const registration = `\n;${reference}?.observeFactories(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,${JSON.stringify(factories.map(({id,classes})=>({id,classes})))});${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(${expressionName})=>eval(${expressionName}),${JSON.stringify(classes)});`;
     let instrumented=code;
     for(const edit of edits.sort((a,b)=>b.at-a.at))instrumented=instrumented.slice(0,edit.at)+edit.text+instrumented.slice(edit.at);
     return original.call(this, instrumented + registration, filename);
@@ -121,7 +207,7 @@ function observeModules(root, key, dependencies = {}) {
       const info=statSync(entry.filename);
       if (info.isFile()) {
         const code=readFileSync(entry.filename,'utf8');
-        const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true});
+        const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true,ranges:true});
         registry.register(entry.filename,createHash('sha256').update(code).digest('hex'),entry.exported,entry.evaluate,describeClasses(ast));
       }
     } catch { /* A missing entry contract only limits its dependent capabilities. */ }

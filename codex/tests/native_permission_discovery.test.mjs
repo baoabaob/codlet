@@ -8,8 +8,8 @@ function fixture(){
   const functions={
     reduce(){return ['availableAgentModes','canShowCustom','configNonFullAccessMode','hasAuthoritativeGuardianApprovalDefault','showGuardianOption'];},
     convert(a,b,c){return ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'];},
-    toSettings(a){return ['activePermissionProfile','sandboxPolicy','permissions:'];},
-    modeFromPolicy(a){return a.approvalPolicy??a.sandboxPolicy??'custom';},
+    toSettings:function wire(a){return a.activePermissionProfile==null?{sandboxPolicy:a.sandboxPolicy}:{permissions:a.activePermissionProfile.id};},
+    modeFromPolicy:function canonical(a){return builtInMode(a)??(a.approvalPolicy!=null&&a.sandboxPolicy!=null?'custom':null);},
     profileMode(a,b){return [':read-only',':workspace',':danger-full-access'];},
     defaultMode:function defaultMode(a){return a.isProjectless&&allowed('granular',a.requirements)?'granular':'auto';},
     windowsMode(a){return a.isWindowsSandboxRequired?'read-only':a.defaultWorkspaceWriteMode;},
@@ -59,5 +59,19 @@ test('default workspace mode resolves its own policy inputs rather than a React 
   assert.equal(matchesNativePermissionSource(source.replace("?'granular':'auto'","?'auto':'granular'"),1,contract),false);
   assert.equal(matchesNativePermissionSource(source.replace("'granular',rules","'granular',foreign"),1,contract),false);
   f.initial.other=function other({isProjectless:p,requirements:r}){return p&&allowed('granular',r)?'granular':'auto';};
+  await assert.rejects(loadNativePermissions(f.options),{code:'desktop_contract_drift'});
+});
+
+test('permission wire projections bind their own input and reject a queue consumer with the same markers',async()=>{
+  const f=fixture();
+  f.initial.queue=function queue({manager}){const pending=()=>manager.activePermissionProfile==null?{sandboxPolicy:manager.sandboxPolicy}:{permissions:manager.activePermissionProfile.id};return manager.approvalPolicy??manager.sandboxPolicy??'custom';};
+  const reader=await loadNativePermissions(f.options);reader.dispose();
+  for(const [name,bad]of [
+    ['toSettings',f.initial.toSettings.toString().replace('sandboxPolicy:a.sandboxPolicy','sandboxPolicy:foreign.sandboxPolicy')],
+    ['toSettings',f.initial.toSettings.toString().replace('activePermissionProfile==null','activePermissionProfile!=null')],
+    ['modeFromPolicy',f.initial.modeFromPolicy.toString().replace('builtInMode(a)','builtInMode(foreign)')],
+    ['modeFromPolicy',f.initial.modeFromPolicy.toString().replace("?'custom':null","?null:'custom'")],
+  ])assert.equal(matchesNativePermissionSource(bad,1,NATIVE_PERMISSION_FUNCTIONS[name]),false);
+  f.shared.other=function other(input){return input.activePermissionProfile==null?{sandboxPolicy:input.sandboxPolicy}:{permissions:input.activePermissionProfile.id};};
   await assert.rejects(loadNativePermissions(f.options),{code:'desktop_contract_drift'});
 });

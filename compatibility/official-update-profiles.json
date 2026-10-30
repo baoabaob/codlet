@@ -161,6 +161,22 @@
       "officialUpdates": {
         "stateSelector": "cWt"
       }
+    },
+    {
+      "appVersion": "26.1027.30824",
+      "buildNumber": "22943",
+      "entry": "app://-/assets/index-b2375c20c2a9.js",
+      "module": "app://-/assets/app-initial-4267e52fe5b0.js",
+      "scopeModule": "app://-/assets/app-shared-b9a49a97ca55.js",
+      "servicesModule": "app://-/assets/app-shared-b9a49a97ca55.js",
+      "exports": {
+        "scope": "klt",
+        "services": "Vct",
+        "servicesSetter": "Wct"
+      },
+      "officialUpdates": {
+        "stateSelector": "R1t"
+      }
     }
   ]
 }

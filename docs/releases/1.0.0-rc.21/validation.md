@@ -127,5 +127,32 @@ retry and management recovery. Formatting and diff checks also pass.
 
 The published rc.21 setup passed `--validate-upgrade` against the actual
 per-user installation and returned `phase: ready`. Direct setup execution after
-the client exits is the recovery path; completed installation and authenticated
-UI recovery still require their own receipts.
+the client exits is the recovery path.
+
+## Completed MSI recovery
+
+The user-controlled exit on 2026-10-30 was followed by direct execution of the
+published rc.21 setup. The recovery receipt reached `phase: complete` at
+15:42:26 UTC. Windows Installer replaced rc.20 product
+`{471F0AF4-3884-5B5D-A616-4F7BAC8188A4}` / numeric version `1.0.520` with
+rc.21 product `{2B5B6F37-074B-5325-AD35-17849D3E6414}` / `1.0.521`.
+
+The upgrade retained the current-user scope, the existing `Codlet Preview`
+installation directory, and the registered feature choices: Core, Start Menu,
+CLI PATH and GUI installed; Desktop Shortcut absent. The installed Core was
+26,282,496 bytes with SHA-256
+`1c66fd37d3a73e9a224b4c3fe63799ab2782a87b33ea456c23f6f02abcc25753`,
+matching the published build. Launcher, MSI marker and Node pin hashes were
+also verified.
+
+The resulting Core `44476` reported rc.21 and `state: ready`; Native `12524`
+reported package `26.1023.6621.0`. Both Core providers, GUI and the existing
+enabled plugins confirmed activation. The user subsequently confirmed the
+client worked. This establishes the completed MSI upgrade and relaunch; it
+does not extend the synthetic HTTP fixture into an exhaustive authenticated
+network acceptance run.
+
+The retained evidence is
+`.codlet-artifacts/restart-recovery-20261030/run-20261030-142508-387/`:
+`registration-before.json`, `setup-result.json`, `verified-installation.json`,
+`status-after.json` and `status.json`.

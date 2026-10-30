@@ -8,7 +8,7 @@
     "zh": { "name": "Codex 桌面适配器", "description": "为插件提供已适配的 Codex 桌面功能。" },
     "en": { "name": "Codex Desktop Adapter", "description": "Connect plugins to supported Codex desktop features." }
   },
-  "version": "0.2.21",
+  "version": "0.2.22",
   "renderer": { "entry": "renderer.js", "world": "main" },
   "host": { "entry": "host.cjs", "provides": [{ "name": "codlet.client.launch", "api": 1, "scope": "runtime" }] },
   "permissions": ["ui.mainWorld", "host.process", "cdp.raw"],

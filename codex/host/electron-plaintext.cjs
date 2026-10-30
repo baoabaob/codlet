@@ -383,6 +383,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   function roleLive(role,Constructor) {
     const binding=roleBindings.get(role);
     if(!binding||binding.Constructor!==Constructor)return false;
+    if(binding.candidates.length&&!binding.candidates.some(candidate=>candidate.live?.()!==false)){resetRole(role);roleReasons.set(role,'contract_unavailable');return false;}
     if(Object.entries(binding.installed).every(([name,method])=>Object.getOwnPropertyDescriptor(Constructor.prototype,name)?.value===method))return true;
     resetRole(role);driftedRoles.add(role);roleReasons.set(role,'binding_changed');
     if(['network','fetch'].includes(role))desktopReason='binding_changed';else taskReason='binding_changed';
@@ -398,19 +399,20 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       if(driftedRoles.has(role)){roleReasons.set(role,'binding_changed');continue;}
       const candidates=[...observed.values()].flat().filter(candidate=>candidate.role===role);
       const collect=selected=>{
-        const found=new Set();let pending=false;
+        const found=new Set(),resolved=[];let pending=false;
         for(const candidate of selected)try {
+          if(candidate.live?.()===false)continue;
           const Constructor=candidate.read();
           if(Constructor==null){pending=true;continue;}
-          if(candidate.resolved===Constructor||supportsRole(Constructor,role,candidate.recorded)) {
-            candidate.resolved=Constructor;found.add(Constructor);
+          if(candidate.resolved===Constructor||roleBindings.get(role)?.Constructor===Constructor&&roleLive(role,Constructor)||supportsRole(Constructor,role,candidate.recorded)) {
+            candidate.resolved=Constructor;found.add(Constructor);resolved.push(candidate);
           }
           delete bindingErrors[diagnosticRole];
         }catch(error){
           bindingErrors[diagnosticRole]=['ReferenceError','TypeError'].includes(error?.name)?error.name:'binding_error';
           if(error?.name==='ReferenceError')pending=true;
         }
-        return{found,pending};
+        return{found,pending,resolved};
       };
       let selected=collect(candidates.filter(candidate=>candidate.recorded));
       if(!selected.found.size&&!selected.pending)selected=collect(candidates.filter(candidate=>!candidate.recorded));
@@ -421,7 +423,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
         continue;
       }
       const Constructor=[...found][0];
-      if(roleBindings.get(role)?.Constructor===Constructor){roleReasons.delete(role);continue;}
+      if(roleBindings.get(role)?.Constructor===Constructor){roleBindings.get(role).candidates=selected.resolved;roleReasons.delete(role);continue;}
       resetRole(role);
       const at=restores.length;
       try {
@@ -429,7 +431,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
         if(role==='fetch'){hookFetchWrapper(Constructor);mainVerified=true;}
         if(role==='stdio'){hookStdio(Constructor);stdioVerified=stdioInstalled;}
         if(role==='connection'){hookConnection(Constructor);connectionVerified=connectionInstalled;}
-        roleBindings.set(role,{Constructor,restores:restores.slice(at),installed:Object.fromEntries(wrappedMethods[role].map(name=>[name,Object.getOwnPropertyDescriptor(Constructor.prototype,name)?.value]))});roleReasons.delete(role);
+        roleBindings.set(role,{Constructor,candidates:selected.resolved,restores:restores.slice(at),installed:Object.fromEntries(wrappedMethods[role].map(name=>[name,Object.getOwnPropertyDescriptor(Constructor.prototype,name)?.value]))});roleReasons.delete(role);
       }catch(error){
         for(const restore of restores.splice(at).reverse())restore();
         roleReasons.set(role,'contract_unavailable');
@@ -443,7 +445,9 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   function applyRecord(record) {
     const {name,hash:observedSha256}=record;
     if(Object.hasOwn(expectedHashes,name)&&observedSha256!==expectedHashes[name])mismatch={name,observedSha256};
-    const key=record.filename??name,candidates=sourceCandidates(record,PROFILES,expectedHashes);
+    const key=record.filename??name;
+    if(record.retired){observed.delete(key);rejectedRoles.delete(key);refreshBindings();return;}
+    const candidates=sourceCandidates(record,PROFILES,expectedHashes);
     if(Object.hasOwn(expectedHashes,name)) {
       const profile=PROFILES[name],roles=profile?.kind==='bootstrap'?['network',...(profile.connectionSymbol?['connection']:[])]:profile?.kind==='main'?['fetch']:profile?.kind==='stdio'?['stdio']:profile?.kind==='connection'?['connection']:['stdio','connection'];
       rejectedRoles.set(key,roles.filter(role=>!candidates.some(candidate=>candidate.role===role)));

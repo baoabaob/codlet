@@ -78,3 +78,10 @@ test('Windows build 22391 accepts its reviewed image without accepting a neighbo
   assert.throws(()=>planForImage(image,[{...current,wire:'000011001'}]),{code:'client_bootstrap_version_unsupported'});
   assert.throws(()=>planForImage('0'.repeat(64),[current]),{code:'client_bootstrap_version_unsupported'});
 });
+
+test('Windows build 22943 binds the new signed image to its exact fuse wire',()=>{
+  const image='f66d0d4e578dc848dd0666bfa80063ea21402cc6155270316491656f26c3839d',current={...fuse,offset:287200672};
+  assert.deepEqual(planForImage(image,[current]),{moduleData:{module:'chrome.dll',sha256:image,patches:[{fileOffset:287200709,expected:[48],replacement:[49]}]}});
+  assert.throws(()=>planForImage(image,[{...current,offset:current.offset+1}]),{code:'client_bootstrap_version_unsupported'});
+  assert.throws(()=>planForImage(image,[{...current,wire:'000011001'}]),{code:'client_bootstrap_version_unsupported'});
+});

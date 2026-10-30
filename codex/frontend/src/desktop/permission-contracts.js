@@ -3,8 +3,8 @@ import {parseExpressionAt} from 'acorn';
 export const NATIVE_PERMISSION_FUNCTIONS = Object.freeze({
   reduce: { label: 'permission option reducer', markers: ['availableAgentModes','canShowCustom','configNonFullAccessMode','hasAuthoritativeGuardianApprovalDefault','showGuardianOption'] },
   convert: { label: 'permission converter', arities: [3,4], markers: ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'] },
-  toSettings: { label: 'permission wire settings', arity: 1, markers: ['activePermissionProfile','sandboxPolicy','permissions:'] },
-  modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'] },
+  toSettings: { label: 'permission wire settings', arity: 1, markers: ['activePermissionProfile','sandboxPolicy','permissions:'], wireSettings: true },
+  modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'], canonicalMode: true },
   profileMode: { label: 'built-in permission profile', arity: 2, markers: [':read-only',':workspace',':danger-full-access'] },
   defaultMode: { label: 'default workspace mode', arity: 1, markers: ['isProjectless','requirements','granular','auto'], workspaceDefault: true },
   windowsMode: { label: 'Windows default permission mode', arity: 1, markers: ['defaultWorkspaceWriteMode','isWindowsSandboxRequired','read-only'] },
@@ -13,6 +13,29 @@ export const NATIVE_PERMISSION_FUNCTIONS = Object.freeze({
 });
 
 const literal = node => node?.type === 'Literal' ? node.value : node?.type === 'TemplateLiteral' && !node.expressions.length ? node.quasis[0].value.cooked : undefined;
+
+function permissionProjection(source, role) {
+  try {
+    const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),parameter=fn.params?.[0];
+    if(fn.async||fn.generator||fn.params.length!==1||parameter.type!=='Identifier')return false;
+    const result=fn.body.type==='BlockStatement'&&fn.body.body.length===1&&fn.body.body[0].type==='ReturnStatement'?fn.body.body[0].argument:fn.body;
+    const member=(node,...keys)=>{
+      for(let index=keys.length-1;index>=0;index--){if(node?.type!=='MemberExpression'||node.computed||node.optional||node.property.name!==keys[index])return false;node=node.object;}
+      return node?.type==='Identifier'&&node.name===parameter.name;
+    };
+    const nonNull=(node,key)=>node?.type==='BinaryExpression'&&node.operator==='!='&&member(node.left,key)&&literal(node.right)===null;
+    const object=(node,key,...value)=>node?.type==='ObjectExpression'&&node.properties.length===1&&node.properties[0].type==='Property'&&
+      !node.properties[0].computed&&!node.properties[0].method&&(node.properties[0].key.name??literal(node.properties[0].key))===key&&member(node.properties[0].value,...value);
+    if(role==='wire')return result?.type==='ConditionalExpression'&&result.test?.type==='BinaryExpression'&&result.test.operator==='=='&&
+      member(result.test.left,'activePermissionProfile')&&literal(result.test.right)===null&&
+      object(result.consequent,'sandboxPolicy','sandboxPolicy')&&object(result.alternate,'permissions','activePermissionProfile','id');
+    return result?.type==='LogicalExpression'&&result.operator==='??'&&result.left.type==='CallExpression'&&result.left.callee.type==='Identifier'&&
+      result.left.arguments.length===1&&result.left.arguments[0].type==='Identifier'&&result.left.arguments[0].name===parameter.name&&
+      result.right.type==='ConditionalExpression'&&result.right.test.type==='LogicalExpression'&&result.right.test.operator==='&&'&&
+      nonNull(result.right.test.left,'approvalPolicy')&&nonNull(result.right.test.right,'sandboxPolicy')&&
+      literal(result.right.consequent)==='custom'&&literal(result.right.alternate)===null;
+  }catch{return false;}
+}
 
 function workspaceDefault(source) {
   try {
@@ -53,6 +76,8 @@ export function matchesNativePermissionSource(source, arity, contract) {
   return (contract.arity == null || arity === contract.arity) &&
     (!contract.arities || contract.arities.includes(arity)) &&
     contract.markers.every(marker => source.includes(marker)) &&
+    (!contract.wireSettings||permissionProjection(source,'wire')) &&
+    (!contract.canonicalMode||permissionProjection(source,'mode')) &&
     (!contract.workspaceDefault||workspaceDefault(source)) &&
     (!contract.modelClassification||modelClassification(source));
 }

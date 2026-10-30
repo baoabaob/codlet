@@ -11,6 +11,17 @@ use tempfile::{TempDir, tempdir};
 
 const ID: &str = "test.compatibility-read";
 const MANAGE: &str = "codlet.runtime.manage";
+const FUTURE_IMPLEMENTATION: &str = "999.0.0";
+
+fn implementation_version(id: &str) -> String {
+    crate::codex::internal_plugins()
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == id)
+        .unwrap()
+        .manifest
+        .version
+}
 
 struct Fixture {
     renderer: RendererRuntime,
@@ -59,8 +70,10 @@ impl Fixture {
                         && record["clientVersion"] == "26.1021.3705.0"
                 })
                 .unwrap();
-            record["requiredAdapters"]["codex.desktop.adapter"] = json!("0.2.21");
-            record["verifiedWith"][0]["adapters"]["codex.desktop.adapter"] = json!("0.2.21");
+            record["requiredAdapters"]["codex.desktop.adapter"] = json!(FUTURE_IMPLEMENTATION);
+            for verification in record["verifiedWith"].as_array_mut().unwrap() {
+                verification["adapters"]["codex.desktop.adapter"] = json!(FUTURE_IMPLEMENTATION);
+            }
             let mut cache = registry_path.as_os_str().to_owned();
             cache.push(".compatibility-cache.json");
             std::fs::write(std::path::PathBuf::from(cache),json!({"schema":1,"sourceUrl":"https://raw.githubusercontent.com/baoabaob/codlet/main/compatibility/tested-client-versions.json","checkedAtUnixMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,"etag":null,"catalog":catalog}).to_string()).unwrap();
@@ -229,7 +242,10 @@ fn public_host_and_renderer_status_use_core_catalog_owner_publications_and_rejec
         .iter()
         .find(|missing| missing["id"] == crate::codex::UI_PROVIDER_ID)
         .unwrap();
-    assert_eq!(ui["currentVersion"], "0.1.17");
+    assert_eq!(
+        ui["currentVersion"],
+        implementation_version(crate::codex::UI_PROVIDER_ID)
+    );
     assert_eq!(ui["active"], false);
 }
 
@@ -245,8 +261,11 @@ fn public_status_preserves_insufficient_core_implementation_version() {
         let missing = &value["clientStatus"]["missingRequirements"];
         assert_eq!(missing.as_array().unwrap().len(), 1, "{value}");
         assert_eq!(missing[0]["id"], crate::codex::DESKTOP_PROVIDER_ID);
-        assert_eq!(missing[0]["currentVersion"], "0.2.20");
-        assert_eq!(missing[0]["minimumVersion"], "0.2.21");
+        assert_eq!(
+            missing[0]["currentVersion"],
+            implementation_version(crate::codex::DESKTOP_PROVIDER_ID)
+        );
+        assert_eq!(missing[0]["minimumVersion"], FUTURE_IMPLEMENTATION);
         assert_eq!(missing[0]["active"], true);
     }
 }
