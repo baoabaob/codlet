@@ -509,6 +509,65 @@ fn actual_node_official_update_receipts_keep_server_identity_and_one_controlled_
 }
 
 #[test]
+fn startup_connection_loss_preserves_the_original_operation_and_lease() {
+    for code in ["client_bridge_disconnected", "client_bridge_uncertain"] {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let (source, mut lease) = protocol_source(
+            listener.local_addr().unwrap().port(),
+            json!({"source":{"operations":[],"protocols":[]}}),
+        );
+        source.0.startup_unsettled.store(true, Ordering::Release);
+        {
+            let mut guard = source.0.startup.lock().unwrap();
+            let startup = guard.insert(Startup {
+                provider: None,
+                dispatched: true,
+                receipt: None,
+                failure: None,
+            });
+            assert_eq!(
+                source
+                    .observe_startup(startup, Instant::now() + WAIT, Some(Err(error(code))))
+                    .unwrap(),
+                StartupObservation::Pending
+            );
+            assert!(startup.dispatched);
+            assert!(startup.failure.is_none());
+        }
+        assert_eq!(
+            source.cached_startup_observation(),
+            StartupObservation::Pending
+        );
+        lease.set_nonblocking(true).unwrap();
+        assert_eq!(
+            lease.read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "an uncertain observation must retain the Native lease"
+        );
+        lease.set_nonblocking(false).unwrap();
+        let peer = std::thread::spawn(move || {
+            for operation_id in [Some(STARTUP_OPERATION), None] {
+                let (mut socket, _) = listener.accept().unwrap();
+                let command = read_command(&mut socket);
+                assert_eq!(command["op"], "status", "readiness must not be replayed");
+                assert_eq!(command["operationId"].as_str(), operation_id);
+                socket.write_all(serde_json::to_string(&json!({"ok":true,"result":{"pid":42,"outcome":"applied","epoch":0,"owner":null,"generation":null,"activation":{"installed":false,"activatedSources":[],"unsupportedSources":[]}}})).unwrap().as_bytes()).unwrap();
+            }
+        });
+        assert_eq!(
+            source.complete_startup(None).unwrap(),
+            StartupObservation::Ready(false)
+        );
+        assert!(!source.0.startup_unsettled.load(Ordering::Acquire));
+        assert!(!source.0.retired.load(Ordering::Acquire));
+        source.retire();
+        lease.set_read_timeout(Some(WAIT)).unwrap();
+        assert_eq!(lease.read(&mut [0]).unwrap(), 0);
+        peer.join().unwrap();
+    }
+}
+
+#[test]
 fn malformed_startup_contract_is_terminal_and_never_replays_ready() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let (source, mut lease) = protocol_source(
