@@ -7,7 +7,7 @@ import { reactFactories } from '../frontend/src/adapter/react-factories.js';
 import { createWorkspaceDiscovery } from '../frontend/src/adapter/workspace-discovery.js';
 const desktop = readFileSync(new URL('../bundled/codex-desktop-adapter/renderer.js', import.meta.url), 'utf8');
 function fixture() {
-  const context = vm.createContext({ module:{exports:{}},setTimeout,clearTimeout,AbortController,crypto:{randomUUID},location:{origin:'app://-',pathname:'/index.html'} });
+  const context = vm.createContext({ module:{exports:{}},setTimeout,clearTimeout,queueMicrotask,AbortController,crypto:{randomUUID},location:{origin:'app://-',pathname:'/index.html'} });
   vm.runInContext(desktop,context);
   const native = vm.runInContext(`(()=>{
     const token={id:Symbol()},client={requestPromises:new Map(),sendRequest(){},setAppServerVersion(){},getAppServerVersion:()=> 'future-protocol',onError(){}};
@@ -126,6 +126,76 @@ test('unlisted build, renamed exports and backend version pass actual contracts 
   assert.equal(connection.build.compatibility,'structural');connection.check();
   assert.deepEqual(f.imports,['app://-/assets/app-shared-renamed-123.js']);
   f.native.clientFamily.read=()=>({});assert.throws(()=>connection.check());
+});
+function rpcFixture() {
+  const f=largeShell();f.context.fixtureNative=f.native;
+  const state=vm.runInContext(`(()=>{
+    const f=fixtureNative,calls=[],subscriptions=[],rpc=function(){};
+    rpc.getHostId=async()=>{calls.push('getHostId');return 'local';};
+    rpc.getCachedThreadIds=async()=>{calls.push('getCachedThreadIds');return ['metadata-only'];};
+    rpc.getCachedThreadMetadata=async ids=>{calls.push('getCachedThreadMetadata');return ids.map(id=>({id,name:'Cached metadata',cwd:'C:/project'}));};
+    rpc.getConversation=async id=>{calls.push('getConversation:'+id);return {id,hostId:'local',resumeState:'resumed',turns:[]};};
+    rpc.getStreamRole=async()=>({role:'owner'});
+    rpc.subscribe=spec=>{calls.push('subscribe:'+spec.type);const sub={spec,unsubscribed:0,released:0,async unsubscribe(){this.unsubscribed++;},[Symbol.dispose](){this.released++;}};subscriptions.push(sub);return Promise.resolve(sub);};
+    rpc[Symbol.dispose]=()=>{throw Error('Native RPC must stay owned by Native');};
+    const hostClient={hostId:'local',rpc},state={status:'ready',client:hostClient};
+    f.client.hostId='local';f.managerFamily.read=()=>state;f.node.familyBindings.get(f.managerFamily).set('local',state);
+    return{state,hostClient,rpc,calls,subscriptions};
+  })()`,f.context);
+  return{...f,state};
+}
+function trackedRpcProbe(f) {
+  const original=vm.runInContext('localConnection',f.context),candidates=[];
+  f.context.resourceConnector=()=>{
+    const connection=original(),record={connection,disposed:0};candidates.push(record);
+    connection.manager.subscribe({type:'event',event:'conversation-removed'},()=>{});
+    const dispose=connection.dispose;connection.dispose=()=>{record.disposed++;return dispose();};return connection;
+  };
+  vm.runInContext('localConnection=resourceConnector',f.context);
+  return{candidates,probe:vm.runInContext('probeDiscoveredDesktop',f.context)};
+}
+test('RPC discovery retires each not-ready attempt and transfers only the successful driver',async()=>{
+  const f=rpcFixture(),tracked=trackedRpcProbe(f);
+  f.native.client.getAppServerVersion=()=>tracked.candidates.length===1?null:'ready';
+  const accepted=await tracked.probe(async()=>f.module,1000);
+  assert.equal(tracked.candidates.length,2);assert.equal(tracked.candidates[0].disposed,1);assert.equal(tracked.candidates[1].disposed,0);
+  assert.equal(f.state.subscriptions[0].unsubscribed,1);accepted.check();await accepted.dispose();assert.equal(tracked.candidates[1].disposed,1);
+  assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
+});
+test('RPC discovery releases an untransferred driver on late module failure and cancellation',async()=>{
+  for(const reason of ['import','transport','cancel']){
+    const f=rpcFixture(),tracked=trackedRpcProbe(f),controller=new AbortController();let complete;
+    const pending=tracked.probe(()=>new Promise((resolve,reject)=>{complete=reason==='import'?()=>reject(Error('module failed')):()=>resolve(reason==='transport'?{}:f.module);}),1000,controller.signal);
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(tracked.candidates[0].disposed,0);
+    if(reason==='cancel'){controller.abort();assert.equal(tracked.candidates[0].disposed,1);}
+    complete();await assert.rejects(pending);assert.equal(tracked.candidates[0].disposed,1);
+    assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
+  }
+});
+test('RPC discovery cancellation closes its driver before the original host readiness read settles',async()=>{
+  const f=rpcFixture(),tracked=trackedRpcProbe(f),controller=new AbortController();let complete;
+  f.state.rpc.getHostId=()=>new Promise(resolve=>{complete=()=>resolve('local');});
+  const pending=tracked.probe(async()=>f.module,1000,controller.signal);await new Promise(resolve=>setImmediate(resolve));
+  controller.abort();assert.equal(tracked.candidates[0].disposed,1);complete();await assert.rejects(pending);
+  assert.equal(tracked.candidates.length,1);assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
+});
+test('RPC discovery proves the current same-scope HostClient and request client without preparing conversations',async()=>{
+  const f=rpcFixture(),connection=await f.probe();
+  assert.equal(connection.manager.rpc,true);assert.equal(connection.client,f.native.client);assert.deepEqual([...f.state.calls],['getHostId','getCachedThreadIds']);
+  connection.check();assert.deepEqual([...await connection.manager.readLoadedThreadMetadata()].map(value=>value.id),['metadata-only']);
+  assert.equal(f.state.calls.some(value=>value.startsWith('getConversation:')),false);
+  f.native.node.familyBindings.get(f.native.managerFamily).set('local',{...f.state.state});
+  assert.throws(()=>connection.check(),{code:'desktop_connection_replaced'});await connection.dispose();
+});
+test('RPC Desktop installs owned subscriptions and snapshots only the selected view, with metadata-only loaded pages',async()=>{
+  const f=rpcFixture(),connection=await f.probe(),endpoints=new Map();
+  const adapter=vm.runInContext('createAdapter',f.context)(connection,{rpc:{provide:(cap,method,handler)=>endpoints.set(cap.name+':'+method,handler),unavailable(){}},reportDiagnostic(){},onDeactivate:()=>()=>{}});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(adapter.probe().available,true);
+  const loaded=await endpoints.get('codex.backend.read:threads.loaded')({},{});assert.equal(loaded.threads[0].id,'metadata-only');
+  assert.equal(f.state.calls.includes('getConversation:metadata-only'),false);
+  assert.equal(f.state.calls.filter(value=>value.startsWith('getConversation:')).every(value=>value==='getConversation:long-task'),true);
+  adapter.dispose();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.state.subscriptions.length,5);assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
 });
 test('partial, remote, unbound and ambiguous connections cannot acquire a transport',async()=>{
   for(const mutate of [f=>{f.native.node.familyBindings.get(f.native.clientFamily).clear();},f=>{f.native.manager.getHostId=()=> 'remote';},f=>{f.native.clientFamily.scope={};}]){

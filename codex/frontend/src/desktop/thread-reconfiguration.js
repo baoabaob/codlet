@@ -26,13 +26,14 @@ export function createThreadReconfiguration({ manager, client, check, supported,
     if (!available()) throw fail('desktop_configuration_unsupported');
     args = { ...args };
     validateReconfiguration(args);
-    const id = args.threadId, before = loadedThread(id), state = activeTurnState(before);
+    const id = args.threadId, before = await loadedThread(id), state = activeTurnState(before); check();
     if (selection().threadId !== id) throw fail('desktop_thread_not_selected');
     if (pending.has(id) || !state.activeTurnKnown || state.activeTurnId || before.requests?.length
       || before.threadRuntimeStatus?.type === 'active' || manager.hasInFlightConversationResume?.(id)
       || [...client.requestPromises.values()].some(r => r.conversationId === id && ['turn/start', 'turn/steer', 'thread/resume'].includes(r.method))) throw fail('desktop_thread_busy');
     if (signal?.aborted) throw fail('invocation_cancelled');
-    const roots = manager.getThreadWorkspaceState?.(id)?.applied?.runtimeWorkspaceRoots ?? [before.cwd];
+    const roots = manager.rpc ? await manager.getThreadWritableRoots(id) : manager.getThreadWorkspaceState?.(id)?.applied?.runtimeWorkspaceRoots ?? [before.cwd];
+    check();
     if (!Array.isArray(roots) || !roots.length || roots.some(r => typeof r !== 'string' || !r)) throw fail('desktop_configuration_drift');
     pending.add(id);
     let receipt;
@@ -46,7 +47,7 @@ export function createThreadReconfiguration({ manager, client, check, supported,
       check();
       if (signal?.aborted) throw fail('outcome_unknown');
       // The manager swallows unsubscribe failures: verify it released ownership.
-      if (!receipt && manager.getConversation(id)?.resumeState === 'resumed' && manager.getStreamRole(id)?.role === 'owner') throw fail('configuration_release_failed');
+      if (!receipt && (await manager.getConversation(id))?.resumeState === 'resumed' && (await manager.getStreamRole(id))?.role === 'owner') throw fail('configuration_release_failed');
       const result = receipt ? { status: 'ready' } : await waitFor(manager.resumeConversation({ conversationId: id, workspaceRoots: [...roots] }), signal);
       check();
       if (signal?.aborted) throw fail('outcome_unknown');

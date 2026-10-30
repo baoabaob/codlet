@@ -404,6 +404,26 @@ test('approval resolution is confirmed by the server, separately from optimistic
     assert.equal(observed.at(-1).type, 'approval.resolved'); assert.equal(observed.at(-1).token, request.token);
     f.dispose();
 });
+test('out-of-order RPC approval snapshots cannot replace newer consent or undo a resolution event',async()=>{
+    const f=fixture(),pending=[],manager=f.connection.manager;manager.rpc=true;
+    manager.getConversation=()=>new Promise(resolve=>pending.push(resolve));
+    const request={id:3,method:'item/commandExecution/requestApproval',params:{threadId:'thread-a',turnId:'turn-a',itemId:'item-a',reason:'current consent'}};
+    const first=f.api.read('approvals.list',{threadId:'thread-a'}),second=f.api.read('approvals.list',{threadId:'thread-a'});
+    pending[1]({...f.thread,requests:[request]});const current=(await second).requests[0];
+    pending[0]({...f.thread,requests:[{...request,params:{...request.params,reason:'old consent'}}]});const late=(await first).requests;
+    assert.equal(late[0].token,current.token);assert.equal(late[0].reason,'current consent');
+    const third=f.api.read('approvals.list',{threadId:'thread-a'});
+    f.callbacks.get('notification')({method:'serverRequest/resolved',params:{threadId:'thread-a',requestId:3}});
+    pending[2]({...f.thread,requests:[request]});assert.deepEqual(plain((await third).requests),[]);assert.equal(f.approvals.length,0);f.dispose();
+});
+test('a retired initializer releases a late connection and a rejected adapter leaves no untransferred owner',async()=>{
+    for(const late of [false,true]){
+        const f=fixture();f.dispose();const start=vm.runInContext('startAdapter',f.scope);let complete,disposed=0;
+        const connection={...f.connection,...late?{}:{build:{}},dispose(){disposed++;}};
+        const pending=start(f.context,()=>new Promise(resolve=>{complete=resolve;}));await tick();
+        if(late)pending.dispose();complete(connection);await tick();assert.equal(disposed,1);pending.dispose();
+    }
+});
 
 test('slow Desktop readiness leaves semantic handlers unpublished and finishes without blocking plugin activation', async () => {
     const f = fixture(); f.dispose(); f.endpoints.clear();

@@ -69,7 +69,7 @@ export function createComposers({ document, load, surface, check, report, metric
       footer(record,value);
       if(!record.readyDone){record.readyDone=true;state(record,'ready');record.resolveReady(receipt(record,value));}
       const op=record.activation;
-      if(op&&op.epoch===record.epoch&&!value.disabled&&native.manager.getConversation(record.options.threadId)?.resumeState==='resumed'&&native.manager.getStreamRole(record.options.threadId)?.role==='owner'){
+      if(op&&op.epoch===record.epoch&&!value.disabled&&peekConversation(native.manager,record.options.threadId)?.resumeState==='resumed'&&peekStreamRole(native.manager,record.options.threadId)?.role==='owner'){
         record.activation=null;record.active=true;record.wrapper.removeAttribute('inert');stopPending(record);state(record,'active');op.resolve(receipt(record,value));
       }else if(!op)stopPending(record);
     }catch(error){fail(record,error);}
@@ -141,12 +141,14 @@ export function createComposers({ document, load, surface, check, report, metric
     const valid=()=>{check();live();if(record.disposed||record.failed)throw workspaceError('workspace_retired','Composer handle retired');};
     function dispose() {
       if(record.disposed)return;deactivate(record);record.disposed=true;record.epoch++;stopPending(record);record.observer?.disconnect();record.resize?.disconnect();
+      record.observation?.dispose();
       if(!record.readyDone)record.rejectReady(workspaceError('workspace_retired','Composer retired before readiness'));
       if(record.root)native.DOM.flushSync(()=>record.root.unmount());wrapper.remove();records.delete(record);containers.delete(container);state(record,'disposed');
     }
     record.dispose=dispose;state(record,'preparing');
-    ensure().then(N=>{
+    ensure().then(async N=>{
       if(record.disposed)return;valid();N.check?.();
+      if(N.manager.rpc){record.observation=N.manager.observeThread(opts.threadId,()=>pulse(record));await record.observation.ready;if(record.disposed)return;valid();}
       const source=surface()?.content??surface()?.main??document.querySelector('nav[data-app-navigation-rail="true"]');
       if(!source?.isConnected)throw workspaceError('workspace_host_pending','Native application context is unavailable');
       record.providers=providersFor(source);
@@ -173,7 +175,7 @@ export function createComposers({ document, load, surface, check, report, metric
         state(record,'activating');
         ready.then(()=>{
           if(record.disposed||record.activation!==op)return;valid();native.check?.();
-          if(native.manager.getConversation(opts.threadId)?.resumeState!=='resumed'||native.manager.getStreamRole(opts.threadId)?.role!=='owner'){record.resume=true;render(record);}
+          if(peekConversation(native.manager,opts.threadId)?.resumeState!=='resumed'||peekStreamRole(native.manager,opts.threadId)?.role!=='owner'){record.resume=true;render(record);}
           pulse(record);schedule(record);
         }).catch(error=>{if(record.activation===op)rejectActivation(record,error.code??'workspace_composer_unavailable',error.message);});
         return result;
@@ -192,3 +194,4 @@ export function createComposers({ document, load, surface, check, report, metric
     },
     dispose(){if(disposed)return;for(const record of [...records])record.dispose();for(const record of [...boundRecords])record.handle.dispose();disposed=true;}};
 }
+import { peekConversation, peekStreamRole } from '../desktop/native-manager-rpc.js';

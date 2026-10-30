@@ -279,10 +279,10 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
       subscribe(listener) { live(); if (typeof listener !== 'function' || record.listeners.size >= 32) throw workspaceError('invalid_argument', 'Expected a workspace listener (at most 32)'); record.listeners.add(listener); callback(listener, snapshot); return () => record.listeners.delete(listener); },
       getSurface() { live(); return publicSurface; },
       resolveThreadReference(element) { live(); return resolveThreadReference(doc, element, id => {
-        try { return !!discovery.connection?.().manager.getConversation(id); } catch { return false; }
+        try { const manager=discovery.connection?.().manager;return manager.rpc?manager.hasKnownThread(id):!!peekConversation(manager,id); } catch { return false; }
       }); },
       resolveThreadInteraction(element) { live(); return resolveThreadInteraction(doc, element, id => {
-        try { return !!discovery.connection?.().manager.getConversation(id); } catch { return false; }
+        try { const manager=discovery.connection?.().manager;return manager.rpc?manager.hasKnownThread(id):!!peekConversation(manager,id); } catch { return false; }
       }); },
       hasBlockingOverlay(target) { live(); return hasBlockingOverlay(doc, target); },
       createSlot(name) {
@@ -367,3 +367,4 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
     ...(metrics ? { readTestPoints: () => metrics.report() } : {}),
     dispose() { dispose(); releaseProvider?.(); composers.cleanup().then(() => releaseCleanup?.(), report); } };
 }
+import { peekConversation } from '../desktop/native-manager-rpc.js';

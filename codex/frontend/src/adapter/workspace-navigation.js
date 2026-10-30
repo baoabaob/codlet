@@ -3,6 +3,7 @@ import { threadIdentity } from '../desktop/thread-identity.js';
 import { nativeInputBinding, nativeMainInput, workspaceError } from './workspace-dom.js';
 import { sameNativeInput } from './workspace-native-input.js';
 import { nativeInitializationPending } from './native-readiness.js';
+import { peekConversation, peekStreamRole } from '../desktop/native-manager-rpc.js';
 
 export function createWorkspaceNavigation({document,load,host,check,changed,onPrepared,readBinding,readCurrentInput,metrics}) {
   const validateTarget=thread=>{if(threadIdentity(thread).isSubagent)throw workspaceError('workspace_thread_not_selectable','A subagent task has no independent Native main input');};
@@ -73,14 +74,14 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
     const session={alive:true,operations:new Set(),latest:null};sessions.add(session);track();
     const valid=()=>{check();live();if(!session.alive)throw workspaceError('workspace_retired','Navigation session retired');};
     const ready=ensure().then(()=>undefined);ready.catch(()=>{});
-    const makeOpener=op=>createThreadOpener({manager:{getConversation:id=>native.manager.getConversation(id)},validateTarget,selection:()=>{
-      valid();native.check?.();const match=/^\/local\/([\w-]+)\/?$/.exec(host().navigator.location.pathname),threadId=match?.[1]??null,thread=native.manager.getConversation(threadId);
-      return{threadId,resumeState:thread?.resumeState==='resumed'?'resumed':'loading',streamRole:native.manager.getStreamRole?.(threadId)?.role??'none'};
+    const makeOpener=op=>createThreadOpener({manager:{rpc:native.manager.rpc,getConversation:id=>native.manager.getConversation(id)},validateTarget,selection:()=>{
+      valid();native.check?.();const match=/^\/local\/([\w-]+)\/?$/.exec(host().navigator.location.pathname),threadId=match?.[1]??null,thread=peekConversation(native.manager,threadId);
+      return{threadId,resumeState:thread?.resumeState==='resumed'?'resumed':'loading',streamRole:peekStreamRole(native.manager,threadId)?.role??'none'};
     },navigation:()=>{const navigator=host().navigator;return{stamp:()=>JSON.stringify(navigator.location),open(id){
       const started=metrics?.start();metrics?.add('navigation.dispatch.begin',op.measurement);
       try{return native.inputApi===1?native.openLocalThread(id):navigator.push('/local/'+id);}
       finally{metrics?.end('navigation.dispatch',started,op.measurement);}
-    }};},beforeNavigate:()=>composition(op.measurement),request:async(method,args,signal)=>{
+    }};},onValidated:()=>{if(native.manager.rpc)op.admit();},beforeNavigate:()=>composition(op.measurement),request:async(method,args,signal)=>{
       const started=metrics?.start();metrics?.add('navigation.metadata.begin',op.measurement);
       try{const value=await native.manager.sendRequest(method,args);if(signal?.aborted)throw workspaceError('invocation_cancelled','Navigation validation was cancelled');return value;}
       finally{metrics?.end('navigation.metadata',started,op.measurement);}
@@ -95,7 +96,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
           if(!options||typeof options!=='object'||Array.isArray(options)||Object.keys(options).some(key=>key!=='signal'))throw workspaceError('invalid_argument','Invalid navigation options');
           signal=options.signal;
           if(signal!=null&&(typeof signal.aborted!=='boolean'||typeof signal.addEventListener!=='function'||typeof signal.removeEventListener!=='function'))throw workspaceError('invalid_argument','Invalid navigation signal');
-          if(!signal?.aborted&&native)validateTarget(native.manager.getConversation(args.threadId));
+          if(!signal?.aborted&&native)validateTarget(peekConversation(native.manager,args.threadId));
           const checked=!signal?.aborted&&native?composition(measurement):undefined; // Before supersession, routing or any possible focus change.
           before=!signal?.aborted&&native?.inputApi===1?binding(checked,measurement):null;
         }catch(error){metrics?.end('navigation.preflight.failed',measurement?.started,measurement);throw error;}
@@ -106,8 +107,14 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
         const committed=new Promise((resolve,reject)=>{op.resolveCommitted=resolve;op.rejectCommitted=reject;});executed.catch(()=>{});committed.catch(()=>{});
         const abort=()=>finish(op,'invocation_cancelled','Navigation confirmation was cancelled');
         if(signal?.aborted)abort();else if(signal){signal.addEventListener('abort',abort,{once:true});op.removeAbort=()=>signal.removeEventListener('abort',abort);}
-        if(!op.settled){if(current&&!current.settled)finish(current,'workspace_navigation_superseded','A newer navigation replaced this operation');current=op;session.latest=null;}
-        function run(){if(op.settled)return;try{composition(op.measurement);}catch(error){finish(op,error.code??'workspace_navigation_unavailable',error.message);return;}const start=performance.now();const result=makeOpener(op)(args,op.controller.signal),synchronousMs=performance.now()-start;Promise.resolve(result).then(receipt=>{
+        op.admit=()=>{
+          valid();if(op.settled||op.sequence!==sequence)throw workspaceError('workspace_navigation_superseded','A newer navigation replaced this operation');
+          if(current===op)return;
+          if(current&&!current.settled)finish(current,'workspace_navigation_superseded','A newer navigation replaced this operation');current=op;session.latest=null;
+          if(native?.manager.rpc){session.observation?.dispose();session.observation=native.manager.observeThread(args.threadId,()=>schedule());session.observation.ready.catch(error=>finish(op,error.code??'workspace_navigation_unavailable',error.message));}
+        };
+        if(!op.settled&&native&&!native.manager.rpc)op.admit();
+        function run(){if(op.settled)return;try{composition(op.measurement);if(!native.manager.rpc)op.admit();}catch(error){finish(op,error.code??'workspace_navigation_unavailable',error.message);return;}const start=performance.now();const result=makeOpener(op)(args,op.controller.signal),synchronousMs=performance.now()-start;Promise.resolve(result).then(receipt=>{
           if(op.settled)return;valid();op.didExecute=true;const publishStarted=metrics?.start();
           try{changed();}finally{metrics?.end('navigation.execution.publish',publishStarted,op.measurement);}
           op.resolveExecuted(Object.freeze({...receipt,synchronousMs,revision:op.sequence}));
@@ -133,8 +140,8 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
         }catch{return false;}
         finally{metrics?.end('navigation.focus',started,pin?.measurement);}
       },
-      dispose(){if(!session.alive)return;session.alive=false;session.latest=null;for(const op of session.operations)finish(op,'workspace_retired','Navigation consumer retired');session.operations.clear();sessions.delete(session);if(!sessions.size&&!guards.size)untrack();},
+      dispose(){if(!session.alive)return;session.alive=false;session.latest=null;session.observation?.dispose();for(const op of session.operations)finish(op,'workspace_retired','Navigation consumer retired');session.operations.clear();sessions.delete(session);if(!sessions.size&&!guards.size)untrack();},
     });
   }
-  return{create,prepare:ensure,beginLocationRestore(){check();composition();if(restoringLocation)throw workspaceError('workspace_location_busy','Another captured page restoration is pending');if(current&&!current.settled)finish(current,'workspace_navigation_superseded','Captured page restoration replaced navigation');for(const session of sessions)session.latest=null;restoringLocation=true;return()=>{restoringLocation=false;};},matchesCurrentThread(id){check();if(native?.inputApi!==1)return false;try{native.check?.();const value=binding();return value?.threadId===id&&value.hostId==='local'&&host().navigator.location.pathname==='/local/'+id;}catch{return false;}},assertNotComposing(){check();return composition();},retainGuard(){check();const guard={};guards.add(guard);track();return()=>{guards.delete(guard);if(!guards.size&&!sessions.size)untrack();};},pulse:schedule,currentInput(){check();if(native?.inputApi!==1)return null;native.check?.();return input(current?.settled?undefined:current?.measurement);},dispose(){if(disposed)return;disposed=true;for(const session of sessions){session.alive=false;session.latest=null;for(const op of session.operations)finish(op,'workspace_retired','Navigation provider retired');}sessions.clear();guards.clear();stop();untrack();}};
+  return{create,prepare:ensure,beginLocationRestore(){check();composition();if(restoringLocation)throw workspaceError('workspace_location_busy','Another captured page restoration is pending');if(current&&!current.settled)finish(current,'workspace_navigation_superseded','Captured page restoration replaced navigation');for(const session of sessions)session.latest=null;restoringLocation=true;return()=>{restoringLocation=false;};},matchesCurrentThread(id){check();if(native?.inputApi!==1)return false;try{native.check?.();const value=binding();return value?.threadId===id&&value.hostId==='local'&&host().navigator.location.pathname==='/local/'+id;}catch{return false;}},assertNotComposing(){check();return composition();},retainGuard(){check();const guard={};guards.add(guard);track();return()=>{guards.delete(guard);if(!guards.size&&!sessions.size)untrack();};},pulse:schedule,currentInput(){check();if(native?.inputApi!==1)return null;native.check?.();return input(current?.settled?undefined:current?.measurement);},dispose(){if(disposed)return;disposed=true;for(const session of sessions){session.alive=false;session.latest=null;session.observation?.dispose();for(const op of session.operations)finish(op,'workspace_retired','Navigation provider retired');}sessions.clear();guards.clear();stop();untrack();}};
 }

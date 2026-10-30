@@ -33,6 +33,23 @@ function fixture(){
   const retirements=new Set();api.register({world:'main',pluginId:'consumer',generation:1,onDeactivate(fn){retirements.add(fn);return()=>retirements.delete(fn);}});
   return{api,manager,client,threads,requests,calls,events,errors,native,listeners,retirements,setCurrent:id=>current=id};
 }
+test('RPC permissions keep authorization and confirmation while awaiting the actual Native update ack',async()=>{
+  const f=fixture(),get=f.manager.getConversation,update=f.manager.updateThreadPermissions;
+  f.manager.rpc=true;f.manager.peekConversation=get;f.manager.getConversation=async id=>structuredClone(get(id));f.manager.getStreamRole=async()=>({role:'owner'});
+  delete f.manager.waitForPendingThreadSettingsUpdate;f.manager.pendingPermissionUpdate=()=>undefined;
+  let finish;f.manager.updateThreadPermissions=(...args)=>new Promise(resolve=>{finish=async()=>{await update(...args);resolve();};});
+  const snapshot=await f.api.get({threadId:'thread-a'});let complete=false;
+  const write=f.api.update({threadId:'thread-a',selection:{kind:'agent-mode',mode:'full-access'},expectedRevision:snapshot.revision},null,{pluginId:'consumer',generation:1}).then(value=>{complete=true;return value;});
+  await tick();assert.equal(complete,false);assert.equal(typeof finish,'function');await finish();assert.equal((await write).status,'confirmed');assert.equal(f.calls.length,1);
+  f.api.dispose();
+});
+test('RPC guards refuse an external in-flight settings update and recheck ownership after async canonical reads',async()=>{
+  const f=fixture(),get=f.manager.getConversation;f.manager.rpc=true;f.manager.peekConversation=get;f.manager.getConversation=async id=>structuredClone(get(id));f.manager.getStreamRole=async()=>({role:'owner'});f.manager.pendingPermissionUpdate=()=>undefined;delete f.manager.waitForPendingThreadSettingsUpdate;
+  const before=await f.api.get({threadId:'thread-a'});await f.api.update({threadId:'thread-a',selection:{kind:'agent-mode',mode:'auto'},expectedRevision:before.revision},null,{pluginId:'consumer',generation:1});
+  const message={type:'mcp-request',hostId:'local',request:{id:'send',method:'turn/start',params:{threadId:'thread-a'}}},sent=[];
+  f.requests.set('send',{});f.requests.set('external',{conversationId:'thread-a',method:'thread/settings/update'});f.api.intercept(message,value=>sent.push(value));await tick();assert.equal(sent.length,0);assert.equal(f.errors.at(-1).error.code,'permissions_busy');
+  f.requests.delete('external');let finish;f.native.canonical=()=>new Promise(resolve=>{finish=resolve;});f.api.intercept(message,value=>sent.push(value));await tick();f.requests.delete('send');finish({approvalPolicy:'never'});await tick();assert.equal(sent.length,0);f.api.dispose();
+});
 test('authenticated permissions update uses Native conversion, monotonic revisions and a matching server acknowledgement',async()=>{
   const f=fixture(),before=await f.api.get({threadId:'thread-a'});
   await assert.rejects(f.api.update({threadId:'thread-a',selection:{kind:'agent-mode',mode:'full-access'},expectedRevision:before.revision},null,null),{code:'invalid_owner'});

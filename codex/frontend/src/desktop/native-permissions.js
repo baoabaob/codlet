@@ -45,13 +45,13 @@ export function createNativePermissionReader({document,manager,native,reduce,con
     });
     observer.observe(parent,{subtree:true,childList:true,attributes:true,attributeFilter:['disabled','aria-disabled']});
   };
-  const inputs=id=>{
+  const inputs=(id,conversation)=>{
     const input=nativeMainInput(document,native),binding=input&&nativeInputBinding(input,native);
     if(!binding||binding.threadId!==id)throw workspaceError('permissions_not_selected','Native permission input is not confirmed for this conversation');
     const cache=currentPermissionCache(document,input,{agentState,bindings});
     track(id,cache.trigger);
     if(!cache.configs.length||cache.agents.length!==1||cache.threads.length!==1)throw workspaceError('permissions_unsupported','Native permission cache is incomplete or ambiguous');
-    const agent=cache.agents[0],thread=cache.threads[0],conversation=manager.getConversation(id),settings=conversation?.latestThreadSettings;
+    const agent=cache.agents[0],thread=cache.threads[0],settings=conversation?.latestThreadSettings;
     if(!settings)throw workspaceError('permissions_loading','Native thread permissions are not loaded');
     const cwdValues=[...new Set(cache.cwds.map(value=>value.cwd))];
     if(cwdValues.length!==1||cwdValues[0]!==null&&typeof cwdValues[0]!=='string')throw workspaceError('permissions_unsupported','Native permission workspace is ambiguous');
@@ -92,8 +92,9 @@ export function createNativePermissionReader({document,manager,native,reduce,con
     }
     return{options,profiles};
   }
-  function describe(id,{canonical=false}={}){
-    const cache=inputs(id),menu=cache.menu,visible=menu.options,allowed=cache.reduced.availableAgentModes;
+  const withConversation=(id,read)=>manager.rpc?manager.getConversation(id).then(read):read(manager.getConversation(id));
+  function describe(id,{canonical=false}={},conversation){
+    const cache=inputs(id,conversation),menu=cache.menu,visible=menu.options,allowed=cache.reduced.availableAgentModes;
     const profile=cache.settings.activePermissionProfile?.id??cache.settings.permissions;
     const builtinMode=profileMode(cache.settings.permissions,'auto');
     const canonicalMode=modeFromPolicy({...cache.settings,sandboxPolicy:builtinMode?convert(builtinMode,[],null).sandboxPolicy:cache.settings.sandboxPolicy});
@@ -145,14 +146,14 @@ export function createNativePermissionReader({document,manager,native,reduce,con
   return{sendPathVerified:true,
     subscribe(listener){listeners.add(listener);return()=>{listeners.delete(listener);if(!listeners.size){observer?.disconnect();observer=null;watched=null;}};},
     dispose(){listeners.clear();observer?.disconnect();observer=null;watched=null;},
-    canonical(id){const settings=manager.getConversation(id)?.latestThreadSettings;if(!settings)throw workspaceError('permissions_unconfirmed','Native canonical settings are unavailable');return{approvalPolicy:settings.approvalPolicy,approvalsReviewer:settings.approvalsReviewer,...toSettings(settings),...(settings.runtimeWorkspaceRoots===undefined?{}:{runtimeWorkspaceRoots:settings.runtimeWorkspaceRoots})};},
-    read(id,options){try{return describe(id,options).snapshot;}catch(error){if(['permissions_loading','permissions_unsupported'].includes(error.code))return{phase:error.code==='permissions_loading'?'loading':'unsupported',selection:null,source:'unknown',options:[],diagnostic:{code:error.code,message:error.message}};throw error;}},
-    convert(id,selection){
-      const {cache,snapshot}=describe(id);
+    canonical(id){return withConversation(id,conversation=>{const settings=conversation?.latestThreadSettings;if(!settings)throw workspaceError('permissions_unconfirmed','Native canonical settings are unavailable');return{approvalPolicy:settings.approvalPolicy,approvalsReviewer:settings.approvalsReviewer,...toSettings(settings),...(settings.runtimeWorkspaceRoots===undefined?{}:{runtimeWorkspaceRoots:settings.runtimeWorkspaceRoots})};});},
+    read(id,options){return withConversation(id,conversation=>{try{return describe(id,options,conversation).snapshot;}catch(error){if(['permissions_loading','permissions_unsupported'].includes(error.code))return{phase:error.code==='permissions_loading'?'loading':'unsupported',selection:null,source:'unknown',options:[],diagnostic:{code:error.code,message:error.message}};throw error;}});},
+    convert(id,selection){return withConversation(id,conversation=>{
+      const {cache,snapshot}=describe(id,{},conversation);
       if(!snapshot.options.some(option=>option.enabled&&equal(option.selection,selection)))throw workspaceError('permissions_unavailable','Native does not allow this permission selection');
       if(selection.kind==='profile')return{permissions:selection.profileId};
       const policy=convert(selection.mode,cache.roots,cache.config.resolvedConfig);
       if(!policy)throw workspaceError('permissions_unsupported','Native permission conversion is unavailable');
-      return{approvalPolicy:policy.approvalPolicy,approvalsReviewer:policy.approvalsReviewer,...toSettings(policy)};
+      return{approvalPolicy:policy.approvalPolicy,approvalsReviewer:policy.approvalsReviewer,...toSettings(policy)};});
     }};
 }

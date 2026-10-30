@@ -28,6 +28,29 @@ function setup(t, { cold = false, inputApi = 1, nativeEntry = true, metrics, onI
   t.after(() => { provider.dispose(); window.close(); });
   return { window, document, editable, state, calls, requests, manager, navigator, provider, navigation, makeBinding, checkedInputs, nativeCalls };
 }
+test('RPC navigation awaits the requested Native snapshot and owns only its prepared thread lease',async t=>{
+  const f=setup(t);await f.navigation.ready;let finish,disposed=0;
+  f.manager.rpc=true;f.manager.peekConversation=()=>null;f.manager.peekStreamRole=()=>null;
+  f.manager.getConversation=id=>new Promise(resolve=>{finish=()=>resolve({id,hostId:'local',resumeState:'resumed'});});
+  f.manager.observeThread=id=>{assert.equal(id,'fixture-b');return{ready:Promise.resolve(),dispose(){disposed++;}};};
+  const op=f.navigation.open({threadId:'fixture-b'});assert.deepEqual(f.nativeCalls,[]);finish();await op.executed;await op.committed;
+  assert.deepEqual(f.nativeCalls,['fixture-b']);f.navigation.dispose();assert.equal(disposed,1);
+});
+test('RPC snapshot completion cannot overwrite a newer Native route',async t=>{
+  const f=setup(t);await f.navigation.ready;let finish;f.manager.rpc=true;f.manager.peekConversation=()=>null;f.manager.peekStreamRole=()=>null;f.manager.getConversation=id=>new Promise(resolve=>{finish=()=>resolve({id,hostId:'local'});});f.manager.observeThread=()=>({ready:Promise.resolve(),dispose(){}});
+  const op=f.navigation.open({threadId:'fixture-b'});f.navigator.location={pathname:'/local/user-selected'};finish();await assert.rejects(op.executed,{code:'desktop_navigation_superseded'});assert.equal(f.nativeCalls.length,0);
+});
+test('RPC child validation leaves the previous confirmed dispatch and pending input ownership intact',async t=>{
+  for(const cold of [false,true]){
+    const f=setup(t);await f.navigation.ready;f.state.delayBinding=true;const replies=new Map(),leases=[];f.manager.rpc=true;f.manager.peekConversation=()=>null;f.manager.peekStreamRole=()=>null;
+    f.manager.getConversation=id=>new Promise(resolve=>replies.set(id,resolve));f.manager.observeThread=id=>{leases.push(id);return{ready:Promise.resolve(),dispose(){}};};
+    const previous=f.navigation.open({threadId:'fixture-b'});replies.get('fixture-b')({id:'fixture-b',hostId:'local'});await previous.executed;
+    const child=f.navigation.open({threadId:'fixture-child'});replies.get('fixture-child')(cold?null:{id:'fixture-child',hostId:'local',parentThreadId:'fixture-parent'});
+    if(cold){await new Promise(resolve=>setImmediate(resolve));assert.equal(f.requests.length,1);f.requests[0].resolve({thread:{id:'fixture-child',hostId:'local',parentThreadId:'fixture-parent'}});}
+    await assert.rejects(child.executed,{code:'workspace_thread_not_selectable'});assert.deepEqual(f.nativeCalls,['fixture-b']);assert.deepEqual(leases,['fixture-b']);
+    f.state.binding=f.state.nextBinding;f.provider.pulse();await previous.committed;f.provider.dispose();
+  }
+});
 
 test('a cached child task is rejected before focus, routing or retirement of the previous pending selection',async t=>{
   const f=setup(t,{cold:true});await f.navigation.ready;f.editable.focus();

@@ -1,5 +1,6 @@
 import { workspaceError, OWNED, providersFor, wrapProviders } from './workspace-dom.js';
 import { createTranscriptIsolation } from './workspace-shadow.js';
+import { peekConversation } from '../desktop/native-manager-rpc.js';
 
 export function transcriptOptions(options, previous = { hostId: 'local', readOnly: true, trackReadState: false }) {
   if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['threadId', 'hostId', 'readOnly', 'trackReadState', 'onState'].includes(key)))
@@ -37,13 +38,13 @@ export function createTranscripts({ document, load, surface, check, report, isol
       if (![...records].some(record => !record.disposed && record.options.threadId === job.id)) { histories.delete(job.id); job.resolve(); continue; }
       running++;
       Promise.resolve().then(async () => {
-        if (native.manager.getConversation(job.id)?.resumeState === 'resumed') return;
+        if ((await native.manager.getConversation(job.id))?.resumeState === 'resumed') return;
         await native.manager.loadBackgroundThreadHistoryPage(job.id, { prioritize: job.priority > 0 });
         if (disposed || ![...records].some(record => !record.disposed && record.options.threadId === job.id)) return;
         // Background hydration deliberately leaves an unselected thread in
         // needs_resume. Fill its summary-only turn items through the existing
         // read path; neither navigation nor stream acquisition is required.
-        if (native.manager.getConversation(job.id)?.resumeState !== 'resumed')
+        if ((await native.manager.getConversation(job.id))?.resumeState !== 'resumed')
           await native.manager.loadRemainingTurnItems(job.id);
       }).then(job.resolve, job.reject).finally(() => {
         running--; if (histories.get(job.id) === job.promise) histories.delete(job.id); pump();
@@ -87,7 +88,7 @@ export function createTranscripts({ document, load, surface, check, report, isol
       if (record.disposed || !record.committed || record.bindingThread !== record.options.threadId || record.phase !== 'loading') return;
       const scroller = record.mount.querySelector('.thread-scroll-container');
       if (!scroller) { fail(workspaceError('workspace_transcript_unavailable', 'The native transcript has no independent scroller')); return; }
-      const conversation = native.manager.getConversation(record.options.threadId);
+      const conversation = peekConversation(native.manager, record.options.threadId);
       if (!conversation) return;
       const body = scroller.querySelector('[data-thread-find-target="conversation"]');
       const hasHistory = !!conversation.turns?.length || conversation.turnHistory?.kind === 'canonical' && conversation.turnHistory.history?.islands?.some(island => island.entries?.length);
@@ -128,6 +129,12 @@ export function createTranscripts({ document, load, surface, check, report, isol
       try {
         const N = await ensure();
         if (record.disposed || epoch !== record.epoch) return;
+        if (N.manager.rpc && record.observedThread !== record.options.threadId) {
+          record.observation?.dispose(); record.observedThread = record.options.threadId;
+          record.observation = N.manager.observeThread(record.observedThread, tryReady);
+          await record.observation.ready;
+          if (record.disposed || epoch !== record.epoch) return;
+        }
         if (reload) await history(record);
         if (record.disposed || epoch !== record.epoch) return;
         check();
@@ -203,6 +210,7 @@ export function createTranscripts({ document, load, surface, check, report, isol
       dispose() {
         if (record.disposed) return;
         record.disposed = true; record.epoch++; readyObserver?.disconnect(); updates.delete(record); state(record, 'disposed'); records.delete(record); containers.delete(container);
+        record.observation?.dispose();
         if (!settled) { settled = true; rejectReady(workspaceError('workspace_retired', 'Transcript retired before readiness')); }
         if (record.root) native.DOM.flushSync(() => record.root.unmount()); record.isolation?.dispose(); wrapper.remove(); scroll = null;
         metrics?.add('transcript.root.dispose', { viewId:record.viewId, threadAlias:record.epoch });

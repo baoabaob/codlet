@@ -22,15 +22,34 @@ export function loadedThreadSummary(thread, working = null) {
 export function createLoadedThreads(manager, emit, instance, working = {read:()=>null}) {
   const summaries = new Map(), pages = new Map();
   let initialized = false, pageSequence = 0;
-  const supported = typeof manager.getCachedConversations === 'function';
+  const rpc = manager.rpc === true;
+  const supported = rpc || typeof manager.getCachedConversations === 'function';
   const same = (a, b) => a === b || a && b && a.id === b.id && a.title === b.title && a.cwd === b.cwd && a.runtimeStatus === b.runtimeStatus && a.working === b.working && a.isSubagent === b.isSubagent && a.parentThreadId === b.parentThreadId;
   const project = thread => {const summary=loadedThreadSummary(thread);return summary?loadedThreadSummary(thread,working.read(summary.id,thread)):null;};
   function refresh(threadId, notify = true) {
     if (!supported || typeof threadId !== 'string') return;
+    if (rpc) return refreshMetadata([threadId], notify);
     const next = project(manager.getConversation(threadId)), previous = summaries.get(threadId) ?? null;
     if (same(previous, next)) return;
     if (next) summaries.set(threadId, next); else {summaries.delete(threadId);working.remove?.(threadId);}
     if (notify) emit({ type: 'thread.summary.changed', threadId, thread: next });
+  }
+  async function refreshMetadata(ids, notify = false) {
+    const metadata = await manager.readLoadedThreadMetadata(ids);
+    if (!Array.isArray(metadata)) throw fail('desktop_summary_drift', 'Native thread metadata must be an array');
+    const nextIds = new Set();
+    for (const value of metadata) {
+      const thread = manager.peekConversation(value.id) ?? { ...value, hostId: 'local', title: value.name ?? value.title,
+        threadRuntimeStatus: value.status, resumeState: 'needs_resume' };
+      const next = project(thread), previous = summaries.get(thread.id) ?? null;
+      nextIds.add(thread.id);
+      if (next) summaries.set(thread.id, next);
+      if (notify && !same(previous, next)) emit({type:'thread.summary.changed',threadId:thread.id,thread:next});
+    }
+    for (const id of ids ?? summaries.keys()) if (!nextIds.has(id)) {
+      const existed = summaries.delete(id); working.remove?.(id);
+      if (notify && existed) emit({type:'thread.summary.changed',threadId:id,thread:null});
+    }
   }
   function initialize() {
     if (initialized) return;
@@ -40,18 +59,22 @@ export function createLoadedThreads(manager, emit, instance, working = {read:()=
     for (const thread of threads) { const summary = project(thread); if (summary) summaries.set(summary.id, summary); }
     initialized = true;
   }
-  function read(args = {}) {
+  function read(args = {}, prepared = false) {
     if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !['limit', 'cursor', 'threadId'].includes(key)))
       throw fail('invalid_argument', 'Invalid loaded-thread query');
     const limit = args.limit ?? 20;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw fail('invalid_argument', 'limit must be 1..100');
+    if (rpc && !prepared) {
+      if (args.threadId != null && (typeof args.threadId !== 'string' || !args.threadId || args.threadId.length > 256 || args.cursor != null)) throw fail('invalid_argument', 'Invalid loaded-thread identity');
+      return (args.cursor == null ? refreshMetadata(args.threadId ? [args.threadId] : undefined) : Promise.resolve()).then(() => read(args, true));
+    }
     if (args.threadId != null) {
       if (typeof args.threadId !== 'string' || !args.threadId || args.threadId.length > 256 || args.cursor != null) throw fail('invalid_argument', 'Invalid loaded-thread identity');
       if (!supported) throw fail('desktop_summary_unavailable', 'Cached-thread summaries are unavailable');
-      refresh(args.threadId, false);
+      if (!rpc) refresh(args.threadId, false);
       return { threads: summaries.has(args.threadId) ? [summaries.get(args.threadId)] : [], cursor: null };
     }
-    initialize();
+    if (!rpc) initialize();
     const now = Date.now();
     for (const [key, page] of pages) if (page.expires < now) pages.delete(key);
     let page;
@@ -59,7 +82,7 @@ export function createLoadedThreads(manager, emit, instance, working = {read:()=
       page = pages.get(args.cursor);
       if (!page) throw fail('invalid_argument', 'Loaded-thread cursor is expired or unknown');
       pages.delete(args.cursor);
-    } else { for(const id of summaries.keys())refresh(id,false);page = { entries: [...summaries.values()], offset: 0, expires: now + 15000 }; }
+    } else { if (!rpc) for(const id of summaries.keys())refresh(id,false);page = { entries: [...summaries.values()], offset: 0, expires: now + 15000 }; }
     const threads = page.entries.slice(page.offset, page.offset + limit); page.offset += threads.length;
     let cursor = null;
     if (page.offset < page.entries.length) {

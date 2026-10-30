@@ -1,4 +1,5 @@
 import {awaitNativeInitialization,memoizeNativeLoad} from '../adapter/native-readiness.js';
+import {peekConversation} from './native-manager-rpc.js';
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const policyFields = ['approvalPolicy', 'approvalsReviewer', 'sandboxPolicy', 'permissions', 'runtimeWorkspaceRoots'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -21,7 +22,7 @@ export function createPermissions({manager, client, check, selection, load, emit
   let driver, alive = true, revision = 0, current, releaseNative;
   const controller=new AbortController();
   const owners = new Map(), registered = new Map(), pending = new Set(), dispatches = new Set();
-  const nativeStamp = id => { const thread=manager.getConversation(id),settings=thread?.latestThreadSettings;return [...policyFields.map(key=>settings?.[key]),settings?.activePermissionProfile,settings?.model,thread?.latestModel]; };
+  const nativeStamp = id => { const thread=peekConversation(manager,id),settings=thread?.latestThreadSettings;const values=[...policyFields.map(key=>settings?.[key]),settings?.activePermissionProfile,settings?.model,thread?.latestModel];return manager.rpc?values.map(value=>JSON.stringify(value)):values; };
   const ensure = memoizeNativeLoad(() => awaitNativeInitialization(async()=>{
     const value=await load();
     if(!alive){value?.dispose?.();controller.signal.throwIfAborted();}
@@ -108,14 +109,16 @@ export function createPermissions({manager, client, check, selection, load, emit
       if (snapshot.phase !== 'ready' || !option) throw fail('permissions_unavailable', 'The selected permission is not currently allowed by Native');
       if (option.requiresConfirmation && args.confirmed !== true) throw fail('permissions_confirmation_required', 'Native requires confirmation for this permission choice');
       const settings = await driver.convert(id, args.selection); validate(args, true); principalRecord(principal);
-      const latest = await get({threadId:id, hostId:'local'});
-      if (latest.revision !== args.expectedRevision) throw fail('permissions_stale', 'Native permissions changed during conversion');
       if (signal?.aborted) throw fail('invocation_cancelled', 'Permission update cancelled before dispatch');
       if (!settings || Object.keys(settings).some(key => !policyFields.includes(key))) throw fail('permissions_unsupported', 'Native permission conversion produced unsupported fields');
-      if (typeof manager.updateThreadPermissions !== 'function' || typeof manager.waitForPendingThreadSettingsUpdate !== 'function' || typeof client.addRequestLifecycleListener !== 'function')
+      if (typeof manager.updateThreadPermissions !== 'function' || !manager.rpc && typeof manager.waitForPendingThreadSettingsUpdate !== 'function' || typeof client.addRequestLifecycleListener !== 'function')
         throw fail('permissions_unsupported', 'Native per-thread permission lifecycle is unavailable');
-      if (manager.getConversation(id)?.resumeState !== 'resumed' || manager.getStreamRole(id)?.role !== 'owner')
+      if ((await manager.getConversation(id))?.resumeState !== 'resumed' || (await manager.getStreamRole(id))?.role !== 'owner')
         throw fail('permissions_not_owner', 'Use the Native window owning this resumed conversation to change permissions');
+      const latest = await get({threadId:id, hostId:'local'});
+      if (latest.revision !== args.expectedRevision) throw fail('permissions_stale', 'Native permissions changed during conversion');
+      validate(args, true); principalRecord(principal);
+      if (signal?.aborted) throw fail('invocation_cancelled', 'Permission update cancelled before dispatch');
       if (!registered.has(id) && registered.size >= 256) throw fail('resource_limit', 'Too many registered permission conversations');
       const requestIds = new Set();
       release = client.addRequestLifecycleListener(event => {
@@ -124,7 +127,11 @@ export function createPermissions({manager, client, check, selection, load, emit
       });
       registered.set(id, identity); dispatched = true;
       await manager.updateThreadPermissions(id, settings); check();
-      await manager.waitForPendingThreadSettingsUpdate(id); check(); principalRecord(principal);
+      // The RPC facade's update Promise awaits runThreadSettingsUpdate itself.
+      // It does not expose the legacy manager's separate pending-update method.
+      if (manager.rpc) confirmed = true;
+      else await manager.waitForPendingThreadSettingsUpdate(id);
+      check(); principalRecord(principal);
       if (signal?.aborted) throw fail('outcome_unknown', 'Permission update may have applied after cancellation');
       changed(id); const after = await get({threadId: id, hostId: 'local'});
       if (after.phase !== 'ready' || !same(after.selection, args.selection)) throw fail('permissions_unconfirmed', 'Native did not confirm the selected thread permission');
@@ -151,10 +158,23 @@ export function createPermissions({manager, client, check, selection, load, emit
     const ownsRequest = () => client.requestPromises.has(requestId) && client.requestPromises.get(requestId) === pendingRequest;
     dispatches.add(operation);
     Promise.resolve().then(async () => {
-      check(); await ensure(); await manager.waitForPendingThreadSettingsUpdate(id); check();
+      check(); await ensure();
+      if (manager.rpc) {
+        const update = manager.pendingPermissionUpdate(id);
+        if (update) await update;
+        // An external Native update has no exposed manager queue receipt. Do
+        // not claim it completed or dispatch against its in-flight settings.
+        if ([...client.requestPromises.values()].some(value => value.conversationId === id && ['thread/settings/update','turn/settings/update'].includes(value.method)))
+          throw fail('permissions_busy', 'Native thread settings are still updating');
+      } else await manager.waitForPendingThreadSettingsUpdate(id);
+      check();
       if (!alive || !ownsRequest()) throw fail('permissions_request_retired', 'Native permission request retired before dispatch');
       if (!identity.active || registered.get(id) !== identity) throw fail('permissions_owner_retired', 'Permission owner retired before dispatch');
-      const settings = driver.canonical(id);
+      const settings = await driver.canonical(id); check();
+      if (!alive || !ownsRequest()) throw fail('permissions_request_retired', 'Native permission request retired before dispatch');
+      if (!identity.active || registered.get(id) !== identity) throw fail('permissions_owner_retired', 'Permission owner retired before dispatch');
+      if (manager.rpc && [...client.requestPromises.values()].some(value => value.conversationId === id && ['thread/settings/update','turn/settings/update'].includes(value.method)))
+        throw fail('permissions_busy', 'Native thread settings are still updating');
       if (!settings || !policyFields.some(key => settings[key] !== undefined)) throw fail('permissions_unconfirmed', 'Native canonical thread permissions are unavailable');
       const params = {...request.params};
       for (const key of policyFields) if (key !== 'runtimeWorkspaceRoots' || settings[key] !== undefined) delete params[key];

@@ -10,6 +10,7 @@ import { reviewedNavigator } from '../native-navigation.js';
 import { createPermissions, validatePermissionState } from './permissions.js';
 import { loadNativePermissions } from './native-permissions.js';
 import { attachNativeIngress } from './native-ingress.js';
+import { peekConversation, peekStreamRole } from './native-manager-rpc.js';
 import { desktopDocument, hostFibers, createScopeLocator, loadedAsset, localConnection, uniqueExport } from '../host-discovery.js';
 'use strict';
 
@@ -150,9 +151,31 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
 async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
     const deadline = Date.now() + readyTimeoutMs;
     let connection, sharedUrl;
+    const retirements = [];
+    const retire = () => {
+        if (!connection) return;
+        const previous = connection; connection = null;
+        let completion;
+        try { completion = Promise.resolve(previous.dispose?.()); }
+        catch (error) { completion = Promise.reject(error); }
+        completion.catch(() => {}); retirements.push(completion);
+        return completion;
+    };
+    const aborted = () => retire();
+    signal?.addEventListener('abort', aborted, {once:true});
+    try {
     for (;;) {
-        try { connection = localConnection(); sharedUrl = loadedAsset('shared'); if (!connection.client.getAppServerVersion()) throw fail('desktop_connection_not_ready', 'Waiting for the local App Server'); break; }
+        if (signal?.aborted) throw fail('adapter_deactivated', 'Desktop adapter retired during discovery');
+        try {
+            const candidate = localConnection(); connection = candidate;
+            await candidate.ready;
+            if (signal?.aborted) throw fail('adapter_deactivated', 'Desktop adapter retired during discovery');
+            sharedUrl = loadedAsset('shared');
+            if (!candidate.client.getAppServerVersion()) throw fail('desktop_connection_not_ready', 'Waiting for the local App Server');
+            break;
+        }
         catch (error) {
+            await retire();
             if (!['desktop_connection_not_ready', 'desktop_host_pending', 'ui_host_pending'].includes(error.code) || Date.now() >= deadline) throw error;
             await probeTick(signal, 100);
         }
@@ -171,14 +194,20 @@ async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
     const build = { appVersion: detected?.appVersion, buildNumber: String(detected?.buildNumber), appServerVersion: client.getAppServerVersion(),
         navigation: true, threadConfiguration: true, threadReconfiguration: true, compatibility: 'structural' };
     discoveredBuilds.add(build);
-    return { manager, client, postbox, build, check() {
+    const accepted = connection; connection = null;
+    return { manager, client, postbox, build, dispose: accepted.dispose, check() {
         // Discovery scans candidates once. Steady-state callbacks verify the
         // captured owner and bindings without rereading unrelated host services.
-        connection.check();
+        accepted.check();
         if (loadedAsset('shared') !== sharedUrl ||
             postboxExports.some(key => module[key] !== postbox) || client.getAppServerVersion() !== build.appServerVersion)
             throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
     } };
+    } finally {
+        signal?.removeEventListener('abort', aborted);
+        retire();
+        await Promise.allSettled(retirements);
+    }
 }
 
 function itemDto(item) {
@@ -276,7 +305,7 @@ function activeTurnState(thread) {
 
 function createNavigation(manager, changed, locate = locateNavigator) {
     const navigator = locate(), originals = new Map(), wrappers = new Map();
-    let alive = true;
+    let alive = true, observedThread = null, observation;
     const check = () => {
         if (!alive) throw fail('desktop_navigation_unavailable', 'Desktop navigation has retired');
         if (locate() !== navigator || [...wrappers].some(([method, wrapper]) => navigator[method] !== wrapper)) throw fail('desktop_navigation_drift', 'Desktop navigation ownership changed; reload the adapter');
@@ -285,14 +314,21 @@ function createNavigation(manager, changed, locate = locateNavigator) {
         check();
         const path = navigator.location.pathname;
         const match = /^\/local\/([a-zA-Z0-9_-]{1,256})\/?$/.exec(path);
-        const threadId = match?.[1] ?? null, thread = threadId ? manager.getConversation(threadId) : null;
-        const role = threadId ? manager.getStreamRole(threadId)?.role : null;
+        const threadId = match?.[1] ?? null;
+        if (manager.rpc && observedThread !== threadId) {
+            observation?.dispose(); observedThread = threadId;
+            observation = threadId ? manager.observeThread(threadId, changed) : null;
+            observation?.ready.then(() => { if (alive && observedThread === threadId) changed(); }, error => { if (alive) changed(error); });
+        }
+        const thread = threadId ? peekConversation(manager, threadId) : null;
+        const role = threadId ? peekStreamRole(manager, threadId)?.role : null;
         return { threadId, ...(threadId ? activeTurnState(thread) : { activeTurnId: null, activeTurnKnown: true }),
             resumeState: thread?.resumeState === 'resumed' ? 'resumed' : thread ? 'loading' : 'unloaded', streamRole: role === 'owner' || role === 'follower' ? role : 'none' };
     };
     const dispose = () => {
         if (!alive) return;
         alive = false; let lost = false;
+        observation?.dispose();
         for (const [method, wrapper] of wrappers) { if (navigator[method] === wrapper) navigator[method] = originals.get(method); else lost = true; }
         if (lost) throw fail('desktop_navigation_drift', 'Another page patch replaced Desktop navigation');
     };
@@ -326,8 +362,9 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     if (globalThis[symbol] !== undefined) throw fail('desktop_adapter_conflict', 'Another Desktop adapter already owns this API');
     const instance = crypto.randomUUID();
     let alive = true, sequence = 0, eventBytes = 0, hookSequence = 0, reloadReason = null, unavailable = null;
-    const hooks = new Map(), pendingSubmits = new Set(), events = [], waiters = new Set(), listeners = new Set(), cleanups = [], approvals = new Map(), retiredApprovals = new Map(), tickets = new Map(), submissions = new Map();
-    const nativeWorking=createNativeWorking({changed:id=>{if(alive)loadedThreads.refresh(id);}});
+    const hooks = new Map(), pendingSubmits = new Set(), events = [], waiters = new Set(), listeners = new Set(), cleanups = [], approvals = new Map(), retiredApprovals = new Map(), approvalReads = new Map(), tickets = new Map(), submissions = new Map();
+    const refreshLoaded = id => { const pending=loadedThreads.refresh(id);pending?.catch(error=>{if(alive)markUnavailable(error);}); };
+    const nativeWorking=createNativeWorking({changed:id=>{if(alive)refreshLoaded(id);}});
     const loadedThreads = createLoadedThreads(manager, value => emit(value), instance, nativeWorking);
     let navigation = null, navigationFailure = null, lastSelection = null;
     const check = () => {
@@ -345,7 +382,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             backendRead: { implemented: true, available: unavailable === null },
             backendWrite: { implemented: true, available: unavailable === null },
             events: { implemented: true, available: unavailable === null },
-            loadedThreads: { implemented: true, available: unavailable === null && typeof manager.getCachedConversations === 'function' },
+            loadedThreads: { implemented: true, available: unavailable === null && (typeof manager.getCachedConversations === 'function' || typeof manager.readLoadedThreadMetadata === 'function') },
             workingState: { implemented: true, available: unavailable === null ? nativeWorking.available() : false },
             permissions: { implemented: true, available: unavailable === null ? null : false },
         },
@@ -393,11 +430,11 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             throw error;
         } finally { if (submissionId) submissions.delete(submissionId); }
     };
-    const loadedThread = id => {
+    const loadedThread = async id => {
         identity(id, 'threadId'); check();
-        const thread = manager.getConversation(id);
+        const thread = await manager.getConversation(id); check();
         if (!thread || thread.resumeState !== 'resumed') throw fail('desktop_thread_not_loaded', 'Open this task in the current Desktop window before writing');
-        const role = manager.getStreamRole(id)?.role;
+        const role = (await manager.getStreamRole(id))?.role; check();
         if (role !== 'owner') throw fail(role === 'follower' ? 'desktop_thread_follower' : 'desktop_stream_unavailable', 'Use the Desktop window that currently owns this task stream for writes');
         return thread;
     };
@@ -564,10 +601,11 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             case 'threads.configuration': {
                 fields(args, ['threadId']);
                 const id = identity(args.threadId, 'threadId');
-                const current = manager.getConversation(id);
+                const current = await manager.getConversation(id); check();
                 if (!current || current.resumeState !== 'resumed') throw fail('desktop_thread_not_loaded', 'Task configuration requires a loaded task');
                 const result = await nativeRequest('thread/read', { threadId: id, includeTurns: false }, signal);
-                if (manager.getConversation(id) !== current || current.resumeState !== 'resumed') throw fail('desktop_configuration_drift', 'Task changed while reading configuration');
+                const after = await manager.getConversation(id); check();
+                if ((manager.rpc ? after?.id !== current.id || after?.latestModel !== current.latestModel : after !== current) || after?.resumeState !== 'resumed') throw fail('desktop_configuration_drift', 'Task changed while reading configuration');
                 return { threadId: id, modelProvider: optionalText(result.thread?.modelProvider, 128), model: optionalText(current.latestModel, 256) };
             }
             case 'threads.list': {
@@ -614,7 +652,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             }
             case 'approvals.list': {
                 fields(args, ['threadId']);
-                syncApprovals(identity(args.threadId, 'threadId'));
+                await syncApprovals(identity(args.threadId, 'threadId'));
                 return { requests: [...approvals.values()].filter(entry => entry.dto.threadId === args.threadId).map(entry => copy(entry.dto)) };
             }
             default: throw fail('method_not_found', 'Unknown Desktop read method');
@@ -628,7 +666,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         if (method === 'threads.open') return openThread(args, signal);
         if (method === 'threads.reconfigure') return threadReconfiguration.apply(args, signal);
         fields(args, method === 'turns.start' ? ['threadId', 'text', 'model', 'effort'] : method === 'turns.steer' ? ['threadId', 'turnId', 'text'] : ['threadId', 'turnId']);
-        loadedThread(args.threadId);
+        await loadedThread(args.threadId);
         if (method === 'turns.start') {
             const input = [{ type: 'text', text: str(args.text, 'text', 524288), text_elements: [] }];
             const result = await nativeRequest('turn/start', { threadId: args.threadId, input, ...(args.model === undefined ? {} : { model: str(args.model, 'model') }), ...(args.effort === undefined ? {} : { effort: str(args.effort, 'effort', 32) }) }, signal);
@@ -658,10 +696,14 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         return dto;
     }
     const approvalFingerprint = request => JSON.stringify([request.method, request.params]);
-    const sameApproval = (entry, request) => entry.request === request && entry.method === request.method && entry.fingerprint === approvalFingerprint(request);
+    const sameApproval = (entry, request) => (manager.rpc || entry.request === request) && entry.method === request.method && entry.fingerprint === approvalFingerprint(request);
     function syncApprovals(threadId) {
         if (!alive || typeof threadId !== 'string') return;
-        const requests = manager.getConversation(threadId)?.requests ?? [];
+        const generation = {};
+        if (manager.rpc) approvalReads.set(threadId, generation);
+        const apply = thread => {
+        if (!alive || manager.rpc && approvalReads.get(threadId) !== generation) return;
+        check(); const requests = thread?.requests ?? [];
         const active = new Set();
         for (const [key, entry] of retiredApprovals) if (!entry.resolved && entry.retiredAt + 60000 < Date.now()) retiredApprovals.delete(key);
         for (const request of requests) {
@@ -688,6 +730,9 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             emit({ type: 'approval.retired', token: entry.dto.token, threadId });
         }
         for (const [key, entry] of retiredApprovals) if (entry.threadId === threadId && entry.resolved && !active.has(key)) retiredApprovals.delete(key);
+        };
+        if (manager.rpc) return manager.getConversation(threadId).then(apply).finally(() => { if (approvalReads.get(threadId) === generation) approvalReads.delete(threadId); });
+        apply(manager.getConversation(threadId)); return Promise.resolve();
     }
     function retireApproval(key, entry, resolved) {
         const value = entry.dto ? { token: entry.dto.token, threadId: entry.dto.threadId, turnId: entry.dto.turnId, itemId: entry.dto.itemId, method: entry.method, request: entry.request, fingerprint: entry.fingerprint } : entry;
@@ -696,6 +741,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     function resolveApproval(params) {
         const threadId = identity(params.threadId, 'threadId');
         if (!(typeof params.requestId === 'string' || Number.isSafeInteger(params.requestId))) throw fail('desktop_event_schema_drift', 'Invalid server-request resolution identity');
+        approvalReads.delete(threadId);
         const key = `${threadId}:${typeof params.requestId}:${params.requestId}`;
         const entry = approvals.get(key) ?? retiredApprovals.get(key);
         if (entry && !entry.resolved) {
@@ -703,14 +749,15 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             emit({ type: 'approval.resolved', threadId, token: entry.dto?.token ?? entry.token });
         }
     }
-    function respondApproval(args, signal) {
+    async function respondApproval(args, signal) {
         fields(args, ['token', 'decision', 'answers']);
         str(args.token, 'approval token', 128);
         const entry = [...approvals.values()].find(entry => entry.dto.token === args.token);
         if (!entry || entry.submitted) throw fail('approval_retired', 'Approval token is no longer pending');
-        const thread = loadedThread(entry.dto.threadId);
+        const thread = await loadedThread(entry.dto.threadId); check();
+        if (entry.submitted || approvals.get(`${entry.dto.threadId}:${typeof entry.id}:${entry.id}`) !== entry) throw fail('approval_retired', 'Desktop resolved or replaced this request');
         const request = thread.requests?.find(request => request.id === entry.id && request.method === entry.method);
-        if (!request || !sameApproval(entry, request)) { syncApprovals(entry.dto.threadId); throw fail('approval_retired', 'Desktop resolved or replaced this request'); }
+        if (!request || !sameApproval(entry, request)) { await syncApprovals(entry.dto.threadId); throw fail('approval_retired', 'Desktop resolved or replaced this request'); }
         if (signal?.aborted) throw fail('invocation_cancelled', 'Approval reply was cancelled before dispatch');
         const { kind, threadId } = entry.dto;
         if (typeof manager[APPROVAL_RESPONSES[kind]] !== 'function') throw fail('desktop_approval_response_unavailable', 'This Native approval reply is unavailable; use the Native approval UI');
@@ -723,7 +770,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
                 answers[id] = { answers: [...answer] };
             }
             entry.submitted = true;
-            manager.replyWithUserInputResponse(threadId, entry.id, { answers });
+            await manager.replyWithUserInputResponse(threadId, entry.id, { answers }); check();
         } else {
             if (!['approve', 'decline'].includes(args.decision) || args.answers !== undefined) throw fail('invalid_argument', 'Expected approve or decline');
             if (kind === 'permissions' && args.decision === 'approve' && !approvalDto(threadId, request, entry.dto.token).canApprove) throw fail('unsupported_permissions', 'This request includes permission paths that require the Desktop approval UI');
@@ -731,9 +778,10 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             if (kind === 'command' && args.decision === 'approve' && Array.isArray(choices) && !choices.includes('accept')) throw fail('approval_decision_unavailable', 'Desktop did not offer a one-time approval for this request');
             const nativeDecision = args.decision === 'approve' ? 'accept' : Array.isArray(choices) && !choices.includes('decline') && choices.includes('cancel') ? 'cancel' : 'decline';
             entry.submitted = true;
-            if (kind === 'command') manager.replyWithCommandExecutionApprovalDecision(threadId, entry.id, nativeDecision);
-            else if (kind === 'fileChange') manager.replyWithFileChangeApprovalDecision(threadId, entry.id, args.decision === 'approve' ? 'accept' : 'decline');
-            else manager.replyWithPermissionsRequestApprovalResponse(threadId, entry.id, { permissions: args.decision === 'approve' ? copy(request.params.permissions) : {}, scope: 'turn' });
+            if (kind === 'command') await manager.replyWithCommandExecutionApprovalDecision(threadId, entry.id, nativeDecision);
+            else if (kind === 'fileChange') await manager.replyWithFileChangeApprovalDecision(threadId, entry.id, args.decision === 'approve' ? 'accept' : 'decline');
+            else await manager.replyWithPermissionsRequestApprovalResponse(threadId, entry.id, { permissions: args.decision === 'approve' ? copy(request.params.permissions) : {}, scope: 'turn' });
+            check();
         }
         return { token: args.token, status: 'submitted' };
     }
@@ -823,21 +871,23 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         if (restoration?.reloadRequired) reloadReason ??= restoration.reason;
         for (const pending of pendingSubmits) pending.controller.abort(fail('adapter_deactivated', 'Desktop adapter was deactivated'));
         for (const hook of hooks.values()) hook.active = false;
-        hooks.clear(); listeners.clear(); approvals.clear(); retiredApprovals.clear(); tickets.clear(); loadedThreads.dispose(); permissions.dispose(); events.length = 0; eventBytes = 0;
+        hooks.clear(); listeners.clear(); approvals.clear(); retiredApprovals.clear(); approvalReads.clear(); tickets.clear(); loadedThreads.dispose(); permissions.dispose(); events.length = 0; eventBytes = 0;
         for (const wake of [...waiters]) wake();
         for (const cleanup of cleanups.splice(0).reverse()) { try { cleanup(); } catch (error) { reloadReason ??= String(error.message ?? error); } }
         try { ingress?.detach(); } catch (error) { reloadReason ??= error.message ?? 'Another page patch replaced the Desktop submission hook'; }
+        connection.dispose?.();
         if (globalThis[symbol] === publicApi) delete globalThis[symbol];
         else reloadReason ??= 'Another page patch replaced the Desktop adapter API';
         return reloadReason ? { reloadRequired: true, reason: reloadReason } : undefined;
     }
     try {
         ingress = attachNativeIngress({postbox, client, dispatch:intercept});
+        if (manager.rpc) cleanups.push(manager.onError(markUnavailable));
         Object.defineProperty(globalThis, symbol, { value: publicApi, configurable: true });
         cleanups.push(manager.addNotificationCallback(['thread/started', 'turn/started', 'turn/completed', 'item/started', 'item/completed', 'item/agentMessage/delta', 'item/commandExecution/outputDelta', 'serverRequest/resolved'], receive));
-        cleanups.push(manager.addConversationStateCallback(threadId => { try { check(); syncApprovals(threadId); loadedThreads.refresh(threadId); refreshSelection(threadId); permissions.observe(threadId); } catch (error) { markUnavailable(fail(error.code ?? 'desktop_approval_schema_drift', error.message)); } }));
+        cleanups.push(manager.addConversationStateCallback(threadId => { try { check(); syncApprovals(threadId)?.catch(error=>{if(alive)markUnavailable(error);}); refreshLoaded(threadId); refreshSelection(threadId); permissions.observe(threadId); } catch (error) { markUnavailable(fail(error.code ?? 'desktop_approval_schema_drift', error.message)); } }));
         if (typeof manager.addConversationRemovedCallback === 'function') cleanups.push(manager.addConversationRemovedCallback(threadId => {
-            try { check(); loadedThreads.refresh(threadId); } catch (error) { markUnavailable(error); }
+            try { check(); refreshLoaded(threadId); } catch (error) { markUnavailable(error); }
         }));
         try {
             if (!build.navigation) throw fail('desktop_navigation_unavailable', 'Task navigation has not been verified for this Desktop build');
@@ -902,14 +952,17 @@ function startAdapter(context, probe = (signal, timeout) => probeDesktop(undefin
     const ready = Promise.resolve().then(async () => {
         let attempt = 0, lastReported;
         while (alive) {
+            let candidate;
             try {
-                const connection = await probe(controller.signal, attempt === 0 ? 30000 : 0);
-                if (!alive) return;
-                inner = createAdapter(connection, context, { compatibilityProvided: true });
+                candidate = await probe(controller.signal, attempt === 0 ? 30000 : 0);
+                if (!alive) { await candidate.dispose?.(); candidate = null; return; }
+                inner = createAdapter(candidate, context, { compatibilityProvided: true });
+                candidate = null;
                 failure = null;
                 try { context.reportDiagnostic({ code: 'desktop_adapter_ready', message: 'Existing Desktop services passed interface and connection identity checks', level: 'info' }); } catch {}
                 return;
             } catch (error) {
+                await candidate?.dispose?.();
                 if (!alive) return;
                 if (!['desktop_entry_pending', 'desktop_scope_missing', 'desktop_host_pending', 'desktop_connection_not_ready', 'ui_host_pending'].includes(error.code)) throw error;
                 failure = { code: error.code, message: optionalText(error.message) ?? 'Waiting for the existing Desktop app-host services' };

@@ -81,6 +81,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     return connection;
   };
   const getCommon = () => cached('common',async () => {
+    await existing().ready;
     const native = await baseNative(), sharedUrl = loadedAsset('shared'), initialUrl = loadedAsset('initial');
     if (!native?.React || !native?.Client) throw workspaceError('workspace_host_pending', 'Native React is not ready');
     const [shared, initial] = await Promise.all([module(sharedUrl), module(initialUrl)]);
@@ -224,7 +225,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
           return connection.node.store.get(keymap.resolve(connection.node, connection.chain));
         } };
     }),
-    dispose() { controller.abort(); sources.clear(); modules.clear(); moduleNamespaces.clear(); preparations.clear(); clearWorkspaceSourceCache(); connection = null; },
+    dispose() { controller.abort(); connection?.dispose?.(); sources.clear(); modules.clear(); moduleNamespaces.clear(); preparations.clear(); clearWorkspaceSourceCache(); connection = null; },
   };
   return api;
 }

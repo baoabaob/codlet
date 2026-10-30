@@ -1,3 +1,4 @@
+import { createNativeManagerRpc } from './desktop/native-manager-rpc.js';
 // Discover only objects already owned by the mounted Desktop. Never bootstrap a
 // new connection, evaluate source text, or use a version number as an ABI test.
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -152,7 +153,7 @@ export function localConnection() {
         if (family?.scope !== node.token || typeof family.read !== 'function' || !(bindings instanceof Map) || !bindings.has('local')) continue;
         // read is called only on a family with an existing local binding.
         const value = family.read(node, chain, 'local');
-        bound.push({ family, value });
+        bound.push({ family, value, bindings, binding: bindings.get('local') });
       }
       for (const { family: managerFamily, value: manager } of bound) {
         if (typeof manager?.getHostId !== 'function' || manager.getHostId() !== 'local' || typeof manager.getConversation !== 'function') continue;
@@ -165,6 +166,23 @@ export function localConnection() {
           throw fail('desktop_scope_ambiguous', 'Desktop connection has multiple owners');
         matches.set(manager, { node, chain, managerFamily, clientFamily: clients[0].family, manager, client });
       }
+      const clients = bound.filter(({ value }) => typeof value?.sendRequest === 'function' &&
+        typeof value.getAppServerVersion === 'function' && typeof value.setAppServerVersion === 'function' && value.requestPromises instanceof Map);
+      for (const item of bound) {
+        const state = item.value, hostClient = state?.client;
+        // This is Native's existing HostClient resource, not an arbitrary RPC
+        // proxy matched by method names (its every property can be callable).
+        if (state?.status !== 'ready' || hostClient?.hostId !== 'local' || typeof hostClient.rpc !== 'function' || clients.length !== 1 || clients[0].value.hostId !== 'local') continue;
+        const clientItem = clients[0], client = clientItem.value;
+        const previous = matches.get(hostClient.rpc);
+        if (previous) {
+          if (previous.node !== node || previous.managerFamily !== item.family || previous.clientFamily !== clientItem.family)
+            throw fail('desktop_scope_ambiguous', 'Native manager RPC has multiple owners');
+          continue;
+        }
+        matches.set(hostClient.rpc, { node, chain, managerFamily: item.family, clientFamily: clientItem.family,
+          hostClient, rpc: hostClient.rpc, managerBinding: item.binding, clientBinding: clientItem.binding, client });
+      }
     }
   }
   if (matches.size !== 1) throw fail(matches.size ? 'desktop_scope_ambiguous' : 'desktop_connection_not_ready', 'A unique existing local Desktop connection is required');
@@ -172,14 +190,25 @@ export function localConnection() {
   connection.check = () => {
     desktopDocument();
     const { node, chain } = locate(), { managerFamily, clientFamily, manager, client } = connection;
-    if (!node.familyBindings.get(managerFamily)?.has('local') || !node.familyBindings.get(clientFamily)?.has('local') ||
-        managerFamily.read(node, chain, 'local') !== manager || clientFamily.read(node, chain, 'local') !== client ||
-        manager.getHostId() !== 'local' || manager.requestClient !== client)
+    if (connection.rpc && manager?.error) throw manager.error;
+    const managerBindings = node.familyBindings.get(managerFamily), clientBindings = node.familyBindings.get(clientFamily);
+    const managerCurrent = managerBindings?.has('local') && managerFamily.read(node, chain, 'local');
+    const clientCurrent = clientBindings?.has('local') && clientFamily.read(node, chain, 'local');
+    const current = connection.rpc ? managerBindings?.get('local') === connection.managerBinding && clientBindings?.get('local') === connection.clientBinding &&
+      managerCurrent?.status === 'ready' && managerCurrent.client === connection.hostClient && connection.hostClient.rpc === connection.rpc :
+      managerCurrent === manager && manager.getHostId() === 'local' && manager.requestClient === client;
+    if (!current || clientCurrent !== client)
       throw fail('desktop_connection_replaced', 'The existing local Desktop connection was replaced');
     connection.chain = chain;
     return connection;
   };
-  return connection.check();
+  if (connection.rpc) {
+    connection.manager = createNativeManagerRpc({rpc: connection.rpc, client: connection.client, check: connection.check});
+    connection.ready = connection.manager.ready;
+    connection.dispose = () => connection.manager.dispose();
+  }
+  try { return connection.check(); }
+  catch (error) { connection.dispose?.(); throw error; }
 }
 export const component = value => typeof value === 'function' ||
   [Symbol.for('react.memo'), Symbol.for('react.forward_ref')].includes(value?.$$typeof);
