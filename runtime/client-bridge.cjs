@@ -232,7 +232,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   const skillRoots=createSkillRootFacts();
   const backendOwners=new Set();
   if (configuration.source) {
-    const source = connectPlaintextSource(configuration.source);
+    const source = connectPlaintextSource(configuration.source, {deferredStart:true});
     source.ready.catch(() => {});
     resources.set('plaintextSource', source);
   }
@@ -321,6 +321,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     active = { ...selection, configuration, runtime, activation: null };
     try {
       if (options.snapshot !== undefined) await bounded(() => runtime.restore(options.snapshot), 'core_update_restore_timeout');
+      resources.get('plaintextSource')?.start?.();
       active.activation = await runtime.ready(); if(active.activation?.installed!==true&&active.activation?.pending!==true)throw fail('client_bridge_source_unavailable');
       if (options.confirm) {
         const confirmed = await bounded(() => runtime.confirmTakeover(), 'core_update_takeover_timeout');
@@ -553,10 +554,15 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       if (!runtime || typeof runtime.ready !== 'function' || typeof runtime.close !== 'function') throw fail('client_bridge_exports_invalid');
       active = { ...selection, configuration, runtime, activation: null };
     },
-    async ready() { if(closed)return status();await listening;if(closed)return status();if (active) {
+    async ready() { if(closed)return status();await listening;if(closed)return status();
+      // Core sends the authenticated ready operation only after Native's CDP
+      // pipe reader is live. A listening nextTick alone can precede Native's
+      // Promise-imported synchronous chunks, so it must not start this socket.
+      if (active) {
       const selected=active;
       selected.readyPromise??=Promise.resolve().then(()=>{
         if(closed||active!==selected)return undefined;
+        resources.get('plaintextSource')?.start?.();
         return selected.runtime.ready();
       });
       let activation,readyError=null;try{activation=await selected.readyPromise;}catch(error){
@@ -573,6 +579,8 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     async close() {
       if (closed) return;
       closed = true;
+      const source = resources.get('plaintextSource');
+      if (source?.status?.()?.started === false) source.close();
       writes.close();
       try { await chain; await closeActive(); }
       finally {

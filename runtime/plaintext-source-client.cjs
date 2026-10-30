@@ -6,17 +6,21 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 
 // This client has no privileged knowledge of an application or provider. Only
 // the Native-selected launch owner receives the private source descriptor.
-function connectPlaintextSource(source, { signal } = {}) {
+function connectPlaintextSource(source, { signal, deferredStart = false } = {}) {
   if (source?.version !== 1 || source.kind !== 'plaintext' || !Array.isArray(source.protocols)
     || !Array.isArray(source.operations) || typeof source.routeBaseUrl !== 'string') throw failure('invalid_source');
   const routeBase = new URL(source.routeBaseUrl);
   if (routeBase.protocol !== 'http:' || routeBase.hostname !== '127.0.0.1' || !routeBase.port
     || routeBase.username || routeBase.password || routeBase.search || routeBase.hash || routeBase.pathname === '/') throw failure('invalid_source');
   const controller = new AbortController(), exchanges = new Map(), routes = new Set(), routeRecords = new Map();
-  let closed = false, peer;
+  let closed = false, started = false, peer, resolveReady, rejectReady;
+  // A Native bootstrap can install its synchronous route facade while its
+  // entry frame is paused. Reading readiness or reserving a route must not
+  // establish an unauthenticated socket before the owner starts its transport.
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const stop = () => close();
-  signal?.addEventListener('abort', stop, { once: true });
   if (signal?.aborted) throw failure('host_stopping');
+  signal?.addEventListener('abort', stop, { once: true });
   function retire(record, notify = false) {
     if (!record || !exchanges.has(record.id)) return;
     exchanges.delete(record.id);
@@ -43,7 +47,8 @@ function connectPlaintextSource(source, { signal } = {}) {
       return { ...response, headers: response.headers ?? [], body: record.streams.exportBody(response.body) };
     } finally { record.forwarding = false; }
   }
-  function close() {
+  function stopSource(reason, settle = true) {
+    if (settle) rejectReady(reason ?? failure('host_stopping'));
     if (closed) return;
     closed = true; signal?.removeEventListener('abort', stop);
     for (const record of [...exchanges.values()]) retire(record);
@@ -51,9 +56,20 @@ function connectPlaintextSource(source, { signal } = {}) {
     routeRecords.clear();
     routes.clear(); controller.abort(); peer?.close();
   }
-  const ready = connectTrafficPeer(source.endpoint, { signal: controller.signal, handle, queueRequests: true,
-    event(event) { if (event.event === 'closed') close(); } }).then(value => { peer = value; return true; },
-    error => { close(); throw error; });
+  function close() { stopSource(failure('host_stopping')); }
+  function start() {
+    if (closed || started) return ready;
+    started = true;
+    connectTrafficPeer(source.endpoint, { signal: controller.signal, handle, queueRequests: true,
+      // During initial rejection, preserve the wire's actual failure rather
+      // than replacing it with the source facade's generic retirement reason.
+      event(event) { if (event.event === 'closed') stopSource(undefined, false); } }).then(value => {
+        if (closed) { value.close(); rejectReady(failure('peer_closed')); return; }
+        peer = value; resolveReady(true);
+      }, error => stopSource(error));
+    return ready;
+  }
+  if (!deferredStart) start();
   function certificateReference(record, value) {
     if (value === undefined) return undefined;
     if (typeof value !== 'string') throw failure('invalid_ca_bundle');
@@ -154,7 +170,7 @@ function connectPlaintextSource(source, { signal } = {}) {
       return { ...result, body: wrapped };
     } catch (error) { retire(record, true); throw error; }
   }
-  return Object.freeze({ ready, reserveRoute, registerRoute, interceptHttp, close,
-    status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size }) });
+  return Object.freeze({ ready, start, reserveRoute, registerRoute, interceptHttp, close,
+    status: () => ({ open: !closed, started, routes: routes.size, exchanges: exchanges.size }) });
 }
 module.exports = { connectPlaintextSource };

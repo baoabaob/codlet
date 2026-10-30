@@ -134,7 +134,16 @@ export function loadedAsset(role) {
   desktopDocument();
   if (!['shared', 'initial'].includes(role)) throw fail('desktop_asset_invalid', 'Unknown native module role');
   const pattern = new RegExp('^app://-/assets/app-' + role + '-[A-Za-z0-9_-]+\\.js$');
-  const candidates = [...new Set(Array.from(document.querySelectorAll('link[rel="modulepreload"]'), item => item.href).filter(url => pattern.test(url)))];
+  // Static imports need not have modulepreload elements. The current document's
+  // script resource entries also identify modules Native actually requested;
+  // fetching source text alone must not introduce a module candidate.
+  const resources = globalThis.performance?.getEntriesByType?.('resource') ?? [];
+  const urls = [
+    ...Array.from(document.querySelectorAll('link[rel="modulepreload"]'), item => item.href),
+    ...Array.from(document.scripts ?? []).filter(item => item.type === 'module').map(item => item.src),
+    ...resources.filter(item => item.initiatorType === 'script').map(item => item.name),
+  ];
+  const candidates = [...new Set(urls.filter(url => pattern.test(url)))];
   if (candidates.length !== 1) throw fail(candidates.length ? 'desktop_asset_ambiguous' : 'ui_host_pending', `A unique loaded Desktop ${role} module is required`);
   return candidates[0];
 }
