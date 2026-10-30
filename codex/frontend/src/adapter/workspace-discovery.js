@@ -1,5 +1,6 @@
 import { parseExpressionAt } from 'acorn';
-import { loadedAsset, localConnection, uniqueModuleExport, componentSource } from '../host-discovery.js';
+import { localConnection, uniqueModuleExport, componentSource } from '../host-discovery.js';
+import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import { workspaceError } from './workspace-dom.js';
 import { createNativeComposerDriver } from './workspace-native-composer.js';
 import { createNativeNavigation, navigationSignalExport, nativeNavigationScope } from './workspace-native-navigation.js';
@@ -61,18 +62,21 @@ function workspaceFunction(native, name, optional = false) {
 // One cache per provider lifetime; lazy modules never initialize in pet windows.
 export function createWorkspaceDiscovery(baseNative, { load = url => import(url), read = readWorkspaceAsset, connect = localConnection } = {}) {
   const controller = new AbortController(), sources = new Map(), modules = new Map(), moduleNamespaces = new Map();
-  let connection;
+  let connection,assetOwnerCheck;
+  const assertOwner=()=>{controller.signal.throwIfAborted();assetOwnerCheck?.();};
   const preparations=new Map();
-  const cached=(name,load)=>{if(!preparations.has(name))preparations.set(name,memoizeNativeLoad(load));return preparations.get(name)();};
-  const source = url => { if (!sources.has(url)) sources.set(url, read(url, controller.signal)); return sources.get(url); };
+  const cached=(name,load)=>{assertOwner();if(!preparations.has(name))preparations.set(name,memoizeNativeLoad(load));return preparations.get(name)().then(value=>{assertOwner();return value;});};
+  const source = async url => {assertOwner();if(!sources.has(url))sources.set(url,Promise.resolve().then(()=>{assertOwner();return read(url,controller.signal);}));const value=await sources.get(url);assertOwner();return value;};
   const module = url => {
-    if (!modules.has(url)) modules.set(url, Promise.resolve().then(() => load(url)).then(namespace => {
-      if (controller.signal.aborted) throw workspaceError('workspace_retired', 'Workspace discovery retired');
+    assertOwner();
+    if (!modules.has(url)) modules.set(url, Promise.resolve().then(() => {assertOwner();return load(url);}).then(namespace => {
+      assertOwner();
       moduleNamespaces.set(url, namespace); return namespace;
     }));
-    return modules.get(url);
+    return modules.get(url).then(value=>{assertOwner();return value;});
   };
   const existing = () => {
+    assertOwner();
     connection ??= connect();
     if (connection.check) return connection.check();
     const { node, chain, managerFamily, clientFamily, manager, client } = connection;
@@ -81,10 +85,13 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     return connection;
   };
   const getCommon = () => cached('common',async () => {
-    await existing().ready;
-    const native = await baseNative(), sharedUrl = loadedAsset('shared'), initialUrl = loadedAsset('initial');
+    const native = await baseNative();
+    const [sharedUrl,initialUrl]=await Promise.all(['shared','initial'].map(name=>resolveLoadedAsset(name,{read:source,signal:controller.signal})));
+    const checkAssets=captureResolvedAssets({shared:sharedUrl,initial:initialUrl},{signal:controller.signal});
+    assertOwner();assetOwnerCheck??=checkAssets;
     if (!native?.React || !native?.Client) throw workspaceError('workspace_host_pending', 'Native React is not ready');
     const [shared, initial] = await Promise.all([module(sharedUrl), module(initialUrl)]);
+    checkAssets();
     return { ...native, shared, initial, sharedUrl, initialUrl, modules: moduleNamespaces };
   });
   const sourceSelection = async (native, select, role) => {
@@ -133,6 +140,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     }),
     navigation: async () => {
       const native = await getCommon(), connection = existing();
+      await connection.ready;controller.signal.throwIfAborted();connection.check?.();
       const composerScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'ComposerScope' && typeof value.id === 'symbol', 'composer scope');
       const ThreadScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'ThreadScope' && typeof value.id === 'symbol', 'thread scope');
       const RouteScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'RouteScope' && typeof value.id === 'symbol', 'route scope');
@@ -147,6 +155,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     },
     action: async () => { const native=await getCommon(),current=native.resolveNavigation?.()??native;if(!current.RailButton||!current.RailTooltip)throw workspaceError('workspace_action_unavailable','Native toolbar button or tooltip is unavailable');return{...native,...current,Button:current.RailButton,Tooltip:current.RailTooltip}; },
     transcript: () => cached('transcript',async () => {
+      const connection=existing();await connection.ready;controller.signal.throwIfAborted();connection.check?.();
       const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'local-conversation-thread');
       if (!urls.length) throw workspaceError('workspace_transcript_unavailable', 'Native transcript modules are missing');
       const candidates = await Promise.all(urls.map(async url => ({ url, source: await source(url) })));

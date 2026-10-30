@@ -364,7 +364,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     let alive = true, sequence = 0, eventBytes = 0, hookSequence = 0, reloadReason = null, unavailable = null;
     const hooks = new Map(), pendingSubmits = new Set(), events = [], waiters = new Set(), listeners = new Set(), cleanups = [], approvals = new Map(), retiredApprovals = new Map(), approvalReads = new Map(), tickets = new Map(), submissions = new Map();
     const refreshLoaded = id => { const pending=loadedThreads.refresh(id);pending?.catch(error=>{if(alive)markUnavailable(error);}); };
-    const nativeWorking=createNativeWorking({changed:id=>{if(alive)refreshLoaded(id);}});
+    const nativeWorking=createNativeWorking({changed:id=>{if(alive)refreshLoaded(id);},report:error=>{try{context.reportDiagnostic({code:error.code??'desktop_working_unavailable',message:error.message??'Native Working state is unavailable'});}catch{}}});
     const loadedThreads = createLoadedThreads(manager, value => emit(value), instance, nativeWorking);
     let navigation = null, navigationFailure = null, lastSelection = null;
     const check = () => {
@@ -467,7 +467,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         } catch (error) { navigationUnavailable(error); }
     }
     const openThread = createThreadOpener({ manager, selection, navigation: () => navigation, request: nativeRequest });
-    const permissions=createPermissions({manager,client,check,selection,emit,load:()=>loadNativePermissions({document,manager})});
+    const permissions=createPermissions({manager,client,check,selection,emit,load:options=>loadNativePermissions({document,manager,...options})});
 
     const orderedHooks = () => [...hooks.values()].sort((a, b) => a.priority - b.priority || (a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0) || a.order - b.order);
     const hookInfo = hook => ({ pluginId: hook.pluginId, generation: hook.generation, id: hook.name, priority: hook.priority, timeoutMs: hook.timeoutMs, enabled: hook.enabled, calls: hook.calls, failures: hook.failures, lastDurationMs: hook.lastDurationMs, totalDurationMs: hook.totalDurationMs, lastFailure: hook.lastFailure && { ...hook.lastFailure } });

@@ -345,16 +345,18 @@ function nativeProfile() {
   return profile;
 }
 
-async function loadNative() {
+async function loadNative({signal}={}) {
+  signal?.throwIfAborted();
   desktopDocument();
   const detected = globalThis.electronBridge?.getSentryInitOptions?.();
   const entries = Array.from(document.scripts, script => script.src);
   const reviewed = clientProfile(detected, entries);
   // Profiles are a fast path for known resources. New version numbers and new
   // asset hashes are reasons to probe the actual contract, not to reject it.
-  if (!reviewed?.page || !entries.includes(reviewed.entry)) return discoverNative();
+  if (!reviewed?.page || !entries.includes(reviewed.entry)) return discoverNative({signal});
   const profile = nativeProfile(), page = profile.page, names = page.exports;
   const [react, dom, client, primary, initial] = await Promise.all([import(page.react), import(page.dom), import(page.client), import(page.primary), import(page.initial ?? profile.module)]);
+  signal?.throwIfAborted();
   const native = { React: react[names.react??'t'](), DOM: dom[names.dom??'t'](), Client: client[names.client??'t'](), SidebarItem: primary[names.sidebar], ...reviewedHeader(initial, names) };
   native.NotificationBadge=notificationBadge(Object.values(primary));
   native.composerActionProfile = page.composerAction ?? null;
@@ -382,6 +384,7 @@ async function loadNative() {
 
 export function deferredNavigation(context, load = loadNative) {
   let alive = true, navigation, failure, cancelWait, independentActions, native, rejectRetired;
+  const controller=new AbortController();
   const pending = new Map(), pendingComposer = new Map();
   const composer = () => {
     if (load !== loadNative) return null;
@@ -413,7 +416,7 @@ export function deferredNavigation(context, load = loadNative) {
           navigation = createNavigation(context, null, host);
           break;
         }
-        native ??= await load();
+        native ??= await load({signal:controller.signal});
         if (!alive) break;
         // The document/tree may have changed while the imports were pending.
         navigation = createNavigation(context, native, locateHost(), load !== loadNative);
@@ -521,7 +524,7 @@ export function deferredNavigation(context, load = loadNative) {
     },
     dispose() {
       if (!alive) return;
-      alive = false; rejectRetired(fail('ui_retired', 'The UI adapter retired during initialization')); cancelWait?.();
+      alive = false; controller.abort();rejectRetired(fail('ui_retired', 'The UI adapter retired during initialization')); cancelWait?.();
       for (const entry of pending.values()) entry.lease.remove();
       pending.clear(); navigation?.dispose(); independentActions?.dispose();
       for (const entry of pendingComposer.values()) entry.lease.remove();

@@ -1,4 +1,5 @@
 import {loadedAsset,uniqueModuleExport,componentSource} from '../host-discovery.js';
+import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import {NATIVE_PERMISSION_FUNCTIONS,matchesNativePermissionSource} from './permission-contracts.js';
 import {nativeMainInput,nativeInputBinding,workspaceError} from '../adapter/workspace-dom.js';
 import {currentPermissionCache,currentWindowsRequirement,permissionPickerBindings} from '../adapter/native-permission-cache.js';
@@ -9,21 +10,24 @@ const modes=['read-only','auto','granular','guardian-approvals','full-access','c
 const labels={'read-only':['composer.permissionsDropdown.readOnly','Read only'],auto:['composer.permissionsDropdown.default.approvalOptionLabel','Ask for approval'],granular:['composer.permissionsDropdown.granular','Granular permissions'],
   'guardian-approvals':['composer.permissionsDropdown.guardianApproval.optionLabel','Approve for me'],'full-access':['composer.permissionsDropdown.fullAccess.optionLabel','Full access'],custom:['composer.permissionsDropdown.custom.optionLabel','Custom (config.toml)']};
 
-export async function loadNativePermissions({document,manager,load=url=>import(url),asset=loadedAsset,read=async url=>{
-  const response=await fetch(url,{credentials:'omit'});
+export async function loadNativePermissions({document,manager,load=url=>import(url),asset=loadedAsset,signal,read=async url=>{
+  const response=await fetch(url,{credentials:'omit',signal});
   if(!response.ok||response.url!==url)throw workspaceError('permissions_unsupported','Unable to read the loaded Native permission module');
   return response.text();
 }}) {
-  const urls=[asset('shared'),asset('initial')],modules=new Map(await Promise.all(urls.map(async url=>[url,await load(url)])));
+  const urls=await Promise.all(['shared','initial'].map(name=>asset===loadedAsset?resolveLoadedAsset(name,{read,signal}):asset(name)));
+  const checkAssets=asset===loadedAsset?captureResolvedAssets({shared:urls[0],initial:urls[1]},{signal}):()=>signal?.throwIfAborted();
+  const modules=new Map(await Promise.all(urls.map(async url=>{checkAssets();const value=await load(url);checkAssets();return[url,value];})));
   const brand=name=>uniqueModuleExport(modules,value=>value?.__scopeBrand===name&&typeof value.id==='symbol',name);
   const native={composerScope:brand('ComposerScope'),ThreadScope:brand('ThreadScope'),RouteScope:brand('RouteScope')};
   const functions=Object.fromEntries(Object.entries(NATIVE_PERMISSION_FUNCTIONS).map(([name,contract])=>[name,
     uniqueModuleExport(modules,value=>typeof value==='function'&&matchesNativePermissionSource(componentSource(value),value.length,contract),'Native '+contract.label)]));
   const initial=urls[1],graph=await read(initial),references=[...new Set([...graph.matchAll(/["'`]((?:\.\/)?permissions-mode-dropdown-[A-Za-z0-9_-]+\.js)["'`]/g)].map(match=>new URL(match[1],initial).href))];
+  checkAssets();
   if(references.length!==1||!/^app:\/\/-\/assets\/permissions-mode-dropdown-[A-Za-z0-9_-]+\.js$/.test(references[0]))throw workspaceError('permissions_unsupported','A unique Native permission picker module is required');
   // Reading the lazy module establishes its import graph without executing its
   // initializer or invoking a Native hook.
-  const bindings=permissionPickerBindings(await read(references[0]),references[0],modules,functions.agentState);
+  checkAssets();const pickerSource=await read(references[0]);checkAssets();const bindings=permissionPickerBindings(pickerSource,references[0],modules,functions.agentState);
   if(!bindings.size)throw workspaceError('permissions_unsupported','Native permission picker import is unavailable');
   return createNativePermissionReader({document,manager,native,...functions,bindings});
 }

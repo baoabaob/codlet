@@ -1,4 +1,5 @@
-import { component, componentSource, desktopDocument, loadedAsset, uniqueExport, currentElementAncestry, classicNavigationItem } from '../host-discovery.js';
+import { component, componentSource, desktopDocument, uniqueExport, currentElementAncestry, classicNavigationItem } from '../host-discovery.js';
+import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import { reactFactories } from './react-factories.js';
 import {parseExpressionAt} from 'acorn';
 
@@ -118,18 +119,22 @@ export function newTaskHook(initial) {
   const hooks = values.filter(fn => typeof fn === 'function' && fn.length === 0 && actionCall.test(componentSource(fn)) && componentSource(fn).includes('useContext'));
   return hooks.length === 1 ? hooks[0] : undefined;
 }
-export async function discoverNative({ load = url => import(url), read = async url => {
-  const response = await fetch(url, { credentials: 'omit' });
+export async function discoverNative({ load = url => import(url), signal, read = async url => {
+  const response = await fetch(url, { credentials: 'omit',signal });
   if (!response.ok || response.url !== url) throw fail('ui_asset_unavailable', 'Unable to read the loaded native shared module');
   return response.text();
 } } = {}) {
   desktopDocument();
-  const sharedUrl = loadedAsset('shared'), initialUrl = loadedAsset('initial');
+  const [sharedUrl,initialUrl]=await Promise.all(['shared','initial'].map(name=>resolveLoadedAsset(name,{read,signal})));
+  const checkAssets=captureResolvedAssets({shared:sharedUrl,initial:initialUrl},{signal});
   const [shared, initial] = await Promise.all([load(sharedUrl), load(initialUrl)]);
+  checkAssets();
   const [sharedSource, initialSource] = await Promise.all([read(sharedUrl), read(initialUrl)]);
+  checkAssets();
   const primaryUrls = [...new Set([...initialSource.matchAll(/["'`]((?:\.\/)?app-primary-[A-Za-z0-9_-]+\.js)["'`]/g)].map(match => new URL(match[1], initialUrl).href))];
   if (primaryUrls.length > 1) throw fail('ui_host_drift', 'The native primary module is ambiguous');
   const modules = [shared, initial, ...await Promise.all(primaryUrls.map(load))];
+  checkAssets();
   // Require mounted native components before calling even the React factories.
   const navigation = navigationComponents(modules);
   const names = reactFactories(sharedSource);

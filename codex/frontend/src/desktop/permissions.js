@@ -24,7 +24,7 @@ export function createPermissions({manager, client, check, selection, load, emit
   const owners = new Map(), registered = new Map(), pending = new Set(), dispatches = new Set();
   const nativeStamp = id => { const thread=peekConversation(manager,id),settings=thread?.latestThreadSettings;const values=[...policyFields.map(key=>settings?.[key]),settings?.activePermissionProfile,settings?.model,thread?.latestModel];return manager.rpc?values.map(value=>JSON.stringify(value)):values; };
   const ensure = memoizeNativeLoad(() => awaitNativeInitialization(async()=>{
-    const value=await load();
+    const value=await load({signal:controller.signal});
     if(!alive){value?.dispose?.();controller.signal.throwIfAborted();}
     return value;
   },{signal:controller.signal}).then(value => {

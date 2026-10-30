@@ -62,3 +62,16 @@ test('action discovery reads the current mounted navigation contract after a cla
   const second=await discovery.action();assert.equal(second.Button,current.RailButton);assert.notEqual(second.Button,first.Button);
   assert.equal(bases,1);assert.equal(imports,2,'only layout discovery refreshes; imported Native modules remain cached');
 });
+test('workspace cached results and captured connection checks reject a retired asset owner',async t=>{
+  const previous={document:globalThis.document,location:globalThis.location},root={},internal={containerInfo:root};internal.current={stateNode:internal};root.__reactContainer$test={stateNode:internal};
+  globalThis.document={scripts:[],getElementById:()=>root,querySelectorAll:()=>[{href:'app://-/assets/app-initial-owned.js'},{href:'app://-/assets/app-shared-owned.js'}]};globalThis.location={origin:'app://-',pathname:'/index.html'};t.after(()=>Object.assign(globalThis,previous));
+  let imports=0;const discovery=createWorkspaceDiscovery(async()=>({React:{},Client:{},RailButton(){},RailTooltip(){}}),{load:async()=>{imports++;return{};},connect:()=>assert.fail('A retired asset proof must reject before connection discovery')});t.after(()=>discovery.dispose());
+  await discovery.action();assert.equal(imports,2);root.__reactContainer$test={stateNode:{}};
+  await assert.rejects(discovery.action(),{code:'desktop_asset_owner_replaced'});assert.throws(()=>discovery.connection(),{code:'desktop_asset_owner_replaced'});assert.equal(imports,2);
+});
+test('workspace late module receipts cannot publish after the asset root changes',async t=>{
+  const previous={document:globalThis.document,location:globalThis.location};let root={};
+  globalThis.document={scripts:[],getElementById:()=>root,querySelectorAll:()=>[{href:'app://-/assets/app-initial-late.js'},{href:'app://-/assets/app-shared-late.js'}]};globalThis.location={origin:'app://-',pathname:'/index.html'};t.after(()=>Object.assign(globalThis,previous));
+  let complete,entered;const started=new Promise(resolve=>entered=resolve),discovery=createWorkspaceDiscovery(async()=>({React:{},Client:{},RailButton(){},RailTooltip(){}}),{load:async url=>{if(url.includes('app-shared')){entered();await new Promise(resolve=>complete=resolve);}return{};}});t.after(()=>discovery.dispose());
+  const pending=discovery.action();await started;root={};complete();await assert.rejects(pending,{code:'desktop_asset_owner_replaced'});
+});

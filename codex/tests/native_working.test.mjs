@@ -114,3 +114,26 @@ test('invalid or foreign cached identities are rejected before Native state read
     assert.throws(()=>summaries.read({limit:100}),{code:'desktop_summary_drift'});summaries.dispose();
   }assert.equal(reads,0);
 });
+test('a Working asset owner failure retires its driver and subscriptions and reports once',async()=>{
+  let listener,releases=0,disposals=0,loads=0;const errors=[],provider=createNativeWorking({report:error=>errors.push(error),load:async()=>{loads++;return{read:()=>true,watch(_id,callback){listener=callback;return()=>releases++;},dispose(){disposals++;}};}});
+  await provider.prepare();assert.equal(provider.read('selected'),true);assert.equal(provider.available(),true);
+  const error=Object.assign(Error('Native root retired'),{code:'desktop_asset_owner_replaced'});listener(null,error);
+  assert.equal(provider.available(),false);assert.equal(provider.read('selected'),null);assert.equal(releases,1);assert.equal(disposals,1);assert.deepEqual(errors,[error]);
+  listener(null,error);await provider.prepare();assert.equal(loads,1);assert.equal(errors.length,1);provider.dispose();assert.equal(disposals,1);
+});
+test('a Working setup failure retains its original error when owned connection cleanup also fails',async()=>{
+  const f=fixture(),original=Object.assign(Error('selector contract failed'),{code:'desktop_working_drift'}),cleanup=Error('cleanup failed'),reports=[];let disposed=0;
+  const connection=f.options.connect();connection.dispose=()=>{disposed++;return Promise.reject(cleanup);};
+  await assert.rejects(loadNativeWorking({...f.options,connect:()=>connection,scope(){throw original;},report:error=>reports.push(error)}),error=>error===original);
+  assert.equal(disposed,1);assert.deepEqual(reports,[cleanup]);
+});
+test('asset contract failure during Working loading is finite and does not repeat preparation',async()=>{
+  let loads=0;const errors=[],error=Object.assign(Error('asset graph ambiguous'),{code:'desktop_asset_drift'}),provider=createNativeWorking({load:async()=>{loads++;throw error;},report:value=>errors.push(value)});
+  await provider.prepare();await provider.prepare();assert.equal(provider.available(),false);assert.equal(loads,1);assert.deepEqual(errors,[error]);provider.dispose();
+});
+test('Working cancellation immediately retires a connection awaiting its original readiness receipt',async()=>{
+  const f=fixture(),controller=new AbortController(),connection=f.options.connect();let complete,disposed=0,scopes=0;
+  connection.ready=new Promise(resolve=>complete=resolve);connection.dispose=async()=>{disposed++;};
+  const loading=loadNativeWorking({...f.options,signal:controller.signal,connect:()=>connection,scope(){scopes++;return f.options.scope();}});
+  await new Promise(resolve=>setImmediate(resolve));controller.abort();assert.equal(disposed,1);complete();await assert.rejects(loading,{name:'AbortError'});assert.equal(scopes,0);assert.equal(disposed,1);
+});
