@@ -188,6 +188,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         mode @ ("renderer-reentrant"
         | "renderer-reentrant-depth"
         | "renderer-reentrant-deadline"
+        | "renderer-reentrant-queued-completion"
         | "renderer-reentrant-destroy-activation"
         | "renderer-reentrant-destroy-provider"
         | "renderer-reentrant-destroy-deactivate"
@@ -1446,6 +1447,24 @@ fn scenario_renderer_reentrant(
         expect_remove_renderer_binding(&mut reader, output, &session)?;
         complete_adapter_renderer_deactivation(&mut reader, output, &session, "nested", 201)?;
         expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
+        return expect_root_command(&mut reader, output, "Fake.finish");
+    }
+    if mode == "renderer-reentrant-queued-completion" {
+        emit_renderer_request(
+            output,
+            &session,
+            &bindings,
+            1,
+            "codlet.runtime.ping",
+            "ping",
+        )?;
+        let delivery = expect_held_evaluation(&mut reader, &session, 202, "__rpcReceive")?;
+        // The original activation is complete while Core is still waiting for
+        // this nested response-delivery acknowledgement. Never execute it twice.
+        write_evaluation_value(output, activation, json!({"ok":true}), &session)?;
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        write_evaluation_value(output, delivery, json!({"ok":true}), &session)?;
+        complete_bundled_renderer_deactivation(&mut reader, output, &session, "nested", 202, 201)?;
         return expect_root_command(&mut reader, output, "Fake.finish");
     }
     // Complete a three-level dependency before releasing the activation response.

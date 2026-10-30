@@ -68,13 +68,6 @@ impl RendererRuntime {
                 }
             }
         }
-        let previous = self.drive_deadline;
-        self.drive_deadline = previous.or_else(|| {
-            sessions
-                .iter()
-                .filter_map(|session| session.request_deadline().ok())
-                .min()
-        });
         for plugin in self.plugins.clone() {
             for session in sessions {
                 let target = session.target_id();
@@ -94,7 +87,6 @@ impl RendererRuntime {
                 }
             }
         }
-        self.drive_deadline = previous;
         self.owner_lifecycle_depth -= 1;
         self.publish_status();
         self.flush_host_actions();
@@ -122,6 +114,29 @@ impl RendererRuntime {
     // A rejected optional renderer and its requirement closure do not retire an
     // unrelated renderer. Explicit management still uses transactional install.
     pub(super) fn install_startup_plugin(
+        &mut self,
+        target: &str,
+        plugin: LoadedPlugin,
+        authorization: TargetAuthorizations,
+    ) -> Result<(), RendererError> {
+        let previous = self.drive_deadline;
+        // A distinct plugin/document owns a distinct startup budget. A caller's
+        // existing transaction budget still bounds this activation and its RPCs.
+        self.drive_deadline = Some(match previous {
+            Some(deadline) => deadline,
+            None => self
+                .sessions
+                .get(target)
+                .expect("startup target session exists")
+                .session
+                .request_deadline()?,
+        });
+        let result = self.install_startup_plugin_inner(target, plugin, authorization);
+        self.drive_deadline = previous;
+        result
+    }
+
+    fn install_startup_plugin_inner(
         &mut self,
         target: &str,
         plugin: LoadedPlugin,

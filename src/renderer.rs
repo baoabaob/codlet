@@ -705,16 +705,18 @@ impl RendererRuntime {
         loop {
             let observed_activity = request.activity_epoch();
             self.ensure_live_target(target_id)?;
+            // Nested RPC handling can outlive this wait while the CDP reader
+            // has already delivered the original completion. Settle it first.
+            if let Some(response) = request.try_response().map_err(|error| error.to_string())? {
+                return Ok(response
+                    .result
+                    .expect("successful CDP response must contain result"));
+            }
             if Instant::now() >= self.drive_deadline.expect("driven request has a deadline") {
                 return Err(
                     "Runtime.evaluate exceeded its deadline (absolute renderer RPC budget)"
                         .to_owned(),
                 );
-            }
-            if let Some(response) = request.try_response().map_err(|error| error.to_string())? {
-                return Ok(response
-                    .result
-                    .expect("successful CDP response must contain result"));
             }
             let event = self
                 .sessions

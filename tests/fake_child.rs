@@ -1468,6 +1468,111 @@ fn renderer_reentrant_nested_wait_uses_original_absolute_deadline() {
 
 #[cfg(feature = "test-fixtures")]
 #[test]
+fn renderer_startup_budgets_belong_to_each_plugin_and_document() {
+    use codlet::catalog::PluginCatalog;
+    use codlet::plugins::LocalPluginRegistration;
+    let directory = tempdir().unwrap();
+    let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    for (id, source) in [
+        (
+            "dev.startup-a",
+            "// fixture-timeout-candidate\nmodule.exports={activate(){}};",
+        ),
+        ("dev.startup-b", "module.exports={activate(){}};"),
+    ] {
+        let root = directory.path().join(id);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":[]}).to_string()).unwrap();
+        std::fs::write(root.join("renderer.js"), source).unwrap();
+        registry
+            .register_local(
+                id,
+                LocalPluginRegistration {
+                    broker_policy: Default::default(),
+                    path: root,
+                    grants: vec![],
+                },
+            )
+            .unwrap();
+    }
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    let plugins = catalog
+        .enabled_plugins(&registry)
+        .unwrap()
+        .into_iter()
+        .filter(|plugin| plugin.manifest.id.starts_with("dev.startup-"))
+        .collect();
+    let mut runtime = RendererRuntime::new(plugins, registry).unwrap();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(500));
+    let reports = runtime.attach_all(&sessions);
+    assert_eq!(reports.len(), 2);
+    for (_, result) in reports {
+        assert_eq!(result.unwrap().plugin_count, 1);
+    }
+    let snapshot = runtime.status_snapshot();
+    assert_eq!(snapshot.targets.len(), 2);
+    for target in snapshot.targets {
+        assert_eq!(target.plugins.len(), 1);
+        assert_eq!(target.plugins[0].id, "dev.startup-b");
+        assert!(target.plugins[0].active);
+    }
+    let trace = client
+        .request("Fake.stats", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap();
+    for plugin in ["dev.startup-a", "dev.startup-b"] {
+        for session in ["session-main", "session-second"] {
+            let activations = trace["trace"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| {
+                    event["operation"] == "activate"
+                        && event["pluginId"] == plugin
+                        && event["session"] == session
+                })
+                .count();
+            assert_eq!(
+                activations, 1,
+                "each plugin/document must dispatch once: {plugin}/{session}"
+            );
+        }
+    }
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn renderer_queued_completion_settles_after_nested_delivery_uses_the_budget() {
+    let (child, client, events) = launch("renderer-reentrant-queued-completion", &[]);
+    let (_targets, sessions) =
+        discover_targets(client.clone(), events, Duration::from_millis(1_000));
+    let (_directory, mut runtime) = reentrant_runtime();
+    assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 2);
+    let diagnostics = runtime.take_diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("response delivery failed"))
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("rejected activation"))
+    );
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
 fn renderer_reentrant_destruction_revokes_during_activation_provider_and_deactivate() {
     for phase in ["activation", "provider", "deactivate"] {
         let (child, client, events) = launch(&format!("renderer-reentrant-destroy-{phase}"), &[]);
