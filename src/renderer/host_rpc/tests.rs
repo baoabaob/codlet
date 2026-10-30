@@ -23,6 +23,10 @@ impl Fixture {
     }
 
     fn in_world(world: &str) -> Self {
+        Self::with_direct_provider(world, false)
+    }
+
+    fn with_direct_provider(world: &str, direct: bool) -> Self {
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let scope = root.join("registry.json");
@@ -31,11 +35,42 @@ impl Fixture {
         if world == "main" {
             grants.push(Permission::UiMainWorld);
         }
-        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":world},"requires":[{"name":"codlet.core.services","api":1,"scope":"runtime"}],"permissions":grants}).to_string()).unwrap();
+        let direct_capability = json!({"name":"test.renderer.direct","api":1,"scope":"target"});
+        let mut requires = vec![json!({"name":"codlet.core.services","api":1,"scope":"runtime"})];
+        if direct {
+            requires.push(direct_capability.clone());
+        }
+        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":world},"requires":requires,"permissions":grants}).to_string()).unwrap();
         std::fs::write(root.join("renderer.js"), "exports.activate=context=>{globalThis.__hostAdmissionContext=context};exports.deactivate=()=>{delete globalThis.__hostAdmissionContext};").unwrap();
         let mut registry = PluginRegistry::load(&scope).unwrap();
         for plugin in bundled_plugins().unwrap() {
             registry.set_enabled(&plugin.manifest.id, false).unwrap();
+        }
+        if direct {
+            let provider = root.join("provider");
+            std::fs::create_dir(&provider).unwrap();
+            std::fs::write(provider.join("codlet.json"), json!({"schema":1,"id":"test.renderer.provider","version":"1","renderer":{"entry":"renderer.js","world":"main"},"provides":[direct_capability],"permissions":["ui.mainWorld"]}).to_string()).unwrap();
+            std::fs::write(provider.join("renderer.js"), r#"exports.activate=context=>{
+              globalThis.__directProvider={calls:0,aborts:0,completions:0};
+              context.rpc.provide({name:'test.renderer.direct',api:1,scope:'target'},'hold',async(params,invocation)=>{
+                __directProvider.calls++;
+                if(params.cancel)__hostAdmissionState.controller.abort();
+                invocation.signal.addEventListener('abort',()=>__directProvider.aborts++,{once:true});
+                await new Promise(resolve=>setTimeout(resolve,25));
+                __directProvider.completions++;
+                return {received:true};
+              });
+            };"#).unwrap();
+            registry
+                .register_local(
+                    "test.renderer.provider",
+                    LocalPluginRegistration {
+                        path: provider,
+                        grants: vec![Permission::UiMainWorld],
+                        broker_policy: Default::default(),
+                    },
+                )
+                .unwrap();
         }
         registry
             .register_local(
@@ -294,4 +329,119 @@ fn unacknowledged_host_deliveries_retain_the_original_admission_ownership() {
         fixture.eval("__hostAdmissionContext.services.storage.snapshot()")["revision"],
         0
     );
+}
+
+fn direct_call(fixture: &mut Fixture, cancel: bool, mode: &str) {
+    fixture.enqueue(&format!(r#"
+      globalThis.__hostAdmissionState={{result:null,deliveries:0,controller:new AbortController()}};
+      globalThis.__directBridge??=globalThis.__codletRendererV1;
+      Object.defineProperty(globalThis,'__codletRendererV1',{{configurable:true,value:Object.freeze({{
+        ...__directBridge,__rpcReceive(...args){{
+          __hostAdmissionState.deliveries++;
+          const receipt=__directBridge.__rpcReceive(...args);
+          if({mode:?}==='duplicate')return __directBridge.__rpcReceive(...args);
+          if({mode:?}==='unknown')return{{ok:false,error:'secret consumer payload'}};
+          return receipt;
+        }}
+      }})}});
+      __hostAdmissionContext.rpc.request({{name:'test.renderer.direct',api:1,scope:'target'}},'hold',{{cancel:{cancel}}},{{signal:__hostAdmissionState.controller.signal}})
+        .then(result=>__hostAdmissionState.result={{ok:true,result}},error=>__hostAdmissionState.result={{code:error.code}});
+      undefined"#));
+    fixture.until(|fixture| {
+        fixture.inspect()["result"].is_object() && fixture.renderer.host_rpc.direct.is_empty()
+    });
+}
+
+#[test]
+fn explicitly_cancelled_renderer_consumer_does_not_receive_a_terminal_reply() {
+    let mut fixture = Fixture::with_direct_provider("main", true);
+    direct_call(&mut fixture, true, "normal");
+    fixture.until(|fixture| fixture.eval("__directProvider.completions") == 1);
+    let state = fixture.inspect();
+    assert_eq!(state["result"]["code"], "invocation_cancelled", "{state}");
+    assert_eq!(state["deliveries"], 0, "{state}");
+    assert_eq!(fixture.eval("__directProvider.calls"), 1);
+    assert_eq!(fixture.eval("__directProvider.aborts"), 1);
+    assert!(fixture.renderer.host_rpc.direct.is_empty());
+    assert_eq!(fixture.renderer.pending_host_call_count(), 0);
+    assert!(
+        fixture.renderer.diagnostics.is_empty(),
+        "{:?}",
+        fixture.renderer.diagnostics
+    );
+}
+
+#[test]
+fn renderer_cancellation_requires_the_original_session_binding_and_request_id() {
+    let mut fixture = Fixture::with_direct_provider("main", true);
+    let session = &fixture.renderer.sessions[&fixture.target];
+    let consumer = session
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "test.host-admission")
+        .unwrap()
+        .clone();
+    let other = session
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "test.renderer.provider")
+        .unwrap()
+        .clone();
+    let request = parse_binding_message(&json!({"v":1,"type":"request","pluginId":consumer.id,"generation":consumer.generation,"id":901,"capability":{"name":"test.renderer.direct","api":1,"scope":"target"},"method":"hold","params":null}).to_string()).unwrap();
+    let scope = fixture
+        .renderer
+        .prepare_scoped_call(&fixture.target, &consumer, &request)
+        .unwrap();
+    fixture
+        .renderer
+        .cancel_scoped_call(&fixture.target, &consumer, 902);
+    assert!(!scope.consumer_cancelled());
+    fixture
+        .renderer
+        .cancel_scoped_call(&fixture.target, &other, 901);
+    assert!(!scope.consumer_cancelled());
+    let other_target = fixture
+        .renderer
+        .sessions
+        .keys()
+        .find(|target| **target != fixture.target)
+        .unwrap()
+        .clone();
+    fixture
+        .renderer
+        .cancel_scoped_call(&other_target, &consumer, 901);
+    assert!(!scope.consumer_cancelled());
+    fixture
+        .renderer
+        .cancel_scoped_call(&fixture.target, &consumer, 901);
+    assert!(scope.consumer_cancelled());
+}
+
+#[test]
+fn renderer_replies_and_unknown_or_duplicate_rejections_remain_observable() {
+    let mut fixture = Fixture::with_direct_provider("main", true);
+    direct_call(&mut fixture, false, "normal");
+    assert_eq!(
+        fixture.inspect()["result"],
+        json!({"ok":true,"result":{"received":true}})
+    );
+    assert_eq!(fixture.inspect()["deliveries"], 1);
+    assert!(fixture.renderer.diagnostics.is_empty());
+    for (mode, code) in [
+        ("duplicate", "response_not_pending"),
+        ("unknown", "response_rejected"),
+    ] {
+        direct_call(&mut fixture, false, mode);
+        fixture.until(|fixture| !fixture.renderer.diagnostics.is_empty());
+        let diagnostics = std::mem::take(&mut fixture.renderer.diagnostics);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        let message = &diagnostics[0].message;
+        assert!(message.contains("request_id="), "{message}");
+        assert!(message.contains("method=\"hold\""), "{message}");
+        assert!(message.contains(code), "{message}");
+        assert!(!message.contains("secret consumer payload"), "{message}");
+        assert_eq!(fixture.inspect()["deliveries"], 1);
+        assert_eq!(fixture.inspect()["result"]["ok"], true);
+    }
+    assert_eq!(fixture.eval("__directProvider.calls"), 3);
 }

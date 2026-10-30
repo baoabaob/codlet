@@ -8,6 +8,53 @@ use crate::runtime_inspection::{
 use tempfile::{TempDir, tempdir};
 
 #[test]
+fn renderer_response_rejection_preserves_fixed_reason_without_consumer_data() {
+    for (error, code) in [
+        (
+            "renderer binding response is not recognized",
+            "response_not_recognized",
+        ),
+        (
+            "renderer RPC response id is not pending",
+            "response_not_pending",
+        ),
+        ("secret consumer payload", "response_rejected"),
+    ] {
+        let diagnostic = check_binding_response(
+            "original-binding",
+            &json!({"result":{"value":{"ok":false,"error":error}}}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(diagnostic.contains(code), "{diagnostic}");
+        assert!(!diagnostic.contains(error), "{diagnostic}");
+    }
+    for (result, code) in [
+        (
+            json!({"result":{"type":"undefined"}}),
+            "response_receipt_invalid",
+        ),
+        (
+            json!({"exceptionDetails":{"text":"secret consumer payload"}}),
+            "consumer_exception",
+        ),
+    ] {
+        let diagnostic = check_binding_response("original-binding", &result)
+            .unwrap_err()
+            .to_string();
+        assert!(diagnostic.contains(code), "{diagnostic}");
+        assert!(
+            !diagnostic.contains("secret consumer payload"),
+            "{diagnostic}"
+        );
+    }
+    assert!(
+        check_binding_response("original-binding", &json!({"result":{"value":{"ok":true}}}))
+            .is_ok()
+    );
+}
+
+#[test]
 fn provider_bootstrap_failure_codes_preserve_the_original_diagnostic() {
     for code in ["ui_host_drift", "request_timeout", "invocation_cancelled"] {
         assert_eq!(

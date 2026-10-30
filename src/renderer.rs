@@ -1821,7 +1821,9 @@ impl RendererRuntime {
             }
             return Ok(true);
         }
-        let response_delivery_error = if let Some(id) = request.id {
+        let response_delivery_error = if let Some(id) = request.id
+            && !scoped_call.consumer_cancelled()
+        {
             let response = match outcome {
                 Ok(value) => binding_success(id, value),
                 Err((code, message)) => binding_error(id, code, &message),
@@ -1835,7 +1837,11 @@ impl RendererRuntime {
             self.diagnostics.push(RendererDiagnostic {
                 target_id: target_id.to_owned(),
                 plugin_id: consumer.id.clone(),
-                message: format!("renderer RPC response delivery failed: {error}"),
+                message: format!(
+                    "renderer RPC response delivery failed: request_id={} method={:?}: {error}",
+                    request.id.expect("a response delivery has a request id"),
+                    request.method
+                ),
             });
         }
         if let Some(action) = after_response {
@@ -2446,13 +2452,26 @@ fn check_binding_response(binding_name: &str, result: &Value) -> Result<(), Rend
     if result.get("exceptionDetails").is_some() {
         return Err(RendererError::BindingResponseRejected {
             plugin_id: binding_name.to_owned(),
-            message: "consumer Runtime.evaluate reported exceptionDetails".to_owned(),
+            message:
+                "consumer Runtime.evaluate reported exceptionDetails (code=consumer_exception)"
+                    .to_owned(),
         });
     }
     if result.pointer("/result/value/ok") != Some(&Value::Bool(true)) {
+        // Only classify the runtime's fixed rejection messages. A consumer can
+        // return arbitrary JS values; never echo its error text or response data.
+        let code = match result
+            .pointer("/result/value/error")
+            .and_then(Value::as_str)
+        {
+            Some("renderer binding response is not recognized") => "response_not_recognized",
+            Some("renderer RPC response id is not pending") => "response_not_pending",
+            Some(_) => "response_rejected",
+            None => "response_receipt_invalid",
+        };
         return Err(RendererError::BindingResponseRejected {
             plugin_id: binding_name.to_owned(),
-            message: "consumer did not accept the RPC response".to_owned(),
+            message: format!("consumer did not accept the RPC response (code={code})"),
         });
     }
     Ok(())

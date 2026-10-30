@@ -33,6 +33,16 @@ pub(super) struct ScopedCall {
     inner: Option<RendererCall>,
 }
 
+impl ScopedCall {
+    pub(super) fn consumer_cancelled(&self) -> bool {
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(call) = &self.inner {
+            return call.consumer_cancelled();
+        }
+        false
+    }
+}
+
 #[cfg(any(windows, target_os = "macos"))]
 struct DirectInvocation {
     endpoint: RendererEndpoint,

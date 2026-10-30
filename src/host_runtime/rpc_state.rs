@@ -96,6 +96,15 @@ pub(crate) struct RendererCall {
     cancelled: Arc<AtomicBool>,
 }
 
+impl RendererCall {
+    pub fn consumer_cancelled(&self) -> bool {
+        // This non-Clone receipt is still alive while borrowed. Its own flag is
+        // set only by the original binding/ID cancel or its eventual Drop;
+        // ancestor cancellation and deadlines belong to route.lineage instead.
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
 impl Drop for RendererCall {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
@@ -1219,12 +1228,37 @@ mod tests {
             .unwrap()
             .renderer_calls
             .insert(key.clone(), old.clone());
-        let receipt = RendererCall {
+        let mut receipt = RendererCall {
             route,
             shared: shared.clone(),
             key: Some(key.clone()),
             cancelled: old.clone(),
         };
+        assert!(!receipt.consumer_cancelled());
+        receipt
+            .route
+            .lineage
+            .cancellations
+            .push(Arc::new(AtomicBool::new(true)));
+        assert!(shared.validate(&receipt.route).is_err());
+        assert!(
+            !receipt.consumer_cancelled(),
+            "ancestor retirement is not this consumer's cancel"
+        );
+        receipt.route.lineage.cancellations.clear();
+        receipt.route.lineage.deadline = Instant::now();
+        assert!(shared.validate(&receipt.route).is_err());
+        assert!(
+            !receipt.consumer_cancelled(),
+            "deadline expiry is not this consumer's cancel"
+        );
+        receipt.route.lineage.deadline = Instant::now() + Duration::from_secs(1);
+        shared.retire_plugin("dev.provider", 1);
+        assert!(shared.validate(&receipt.route).is_err());
+        assert!(
+            !receipt.consumer_cancelled(),
+            "provider retirement is not this consumer's cancel"
+        );
         // Cancellation removes the original registration before its asynchronous
         // receipt drops. A later request can then reuse the same caller ID.
         shared.0.lock().unwrap().renderer_calls.remove(&key);
