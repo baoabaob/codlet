@@ -23,6 +23,6 @@
 | 1.0.0-rc.2 | [Capability-based integration and validation](1.0.0-rc.2/validation.md) |
 | 1.0.0-rc.1 | [Implementation and migration](1.0.0-rc.1/implementation.md), [Windows validation and package identities](1.0.0-rc.1/validation.md), [macOS packaging](1.0.0-rc.1/macos-packaging.md) |
 
-The latest local candidate record is **1.0.0-rc.21**, correcting rc.20 Desktop HTTP request handling. **1.0.0-rc.20** was published on 2026-10-28; its navigation and permission acceptance did not cover the affected authenticated Desktop HTTP paths. Each record identifies its exact implementation, artifacts, publication status and evidence; later documentation or directory changes do not change an existing package's source identity. Never overwrite an archive under an existing version.
+The latest Windows preview is **1.0.0-rc.21**, published on 2026-10-30 with the rc.20 Desktop HTTP correction and an exact-base source-only update. **1.0.0-rc.20** was published on 2026-10-28; its navigation and permission acceptance did not cover the affected authenticated Desktop HTTP paths. Each record identifies its exact implementation, artifacts, publication status and evidence; later documentation or directory changes do not change an existing package's source identity. Never overwrite an archive under an existing version.
 
 See [current readiness](../release-readiness.md) for remaining work and [0.2.0 history](../history/releases/0.2.0-readiness.md) for the earlier release plan.

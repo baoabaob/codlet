@@ -18,6 +18,10 @@ The `codlet-update-managed-v2.json` catalog uses schema 2. Each targeted Windows
 modules. `Build-WindowsRelease.ps1` and `Publish-Release.ps1` expose this as
 `-OnlineSourceOnly` for their exact-base online artifacts. Source-only selection
 cannot be combined with a module list; it does not change the complete package.
+The rc.20 MSI updater clears its resident selector and always chooses the
+complete artifact. Building an exact-base source-only ZIP from an MSI directory
+does not override that running updater rule; matching portable owners can select
+the artifact, while MSI owners stage the setup EXE for natural exit.
 
 A Windows runtime manifest can include `online` with `schema: 1`, `bridgeProtocol: 1`, exact `bridgeSha256` and `bootstrapSha256`, and `clientSourcePath: "runtime/core-modules/client-source.cjs"`. The source must be in the manifest file list with its size and SHA-256. It is limited to 1 MiB. Optional `modules` entries bind each fixed ID to `runtime/core-modules/<id>.js` or `.cjs`, with `moduleAbi: 1` and each file limited to 8 MiB. Unknown IDs, mismatched ID/path pairs, duplicates and arbitrary JavaScript paths are rejected.
 
