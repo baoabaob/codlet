@@ -5,6 +5,7 @@ import { createThreadRestoration } from './thread-restoration.js';
 import { createLoadedThreads } from './loaded-threads.js';
 import { threadIdentity } from './thread-identity.js';
 import { createNativeWorking } from './native-working.js';
+import { publishedNotificationExports, nativePublishedNotifications } from './native-published-notifications.js';
 import { createThreadOpener } from './thread-navigation.js';
 import { reviewedNavigator } from '../native-navigation.js';
 import { createPermissions, validatePermissionState } from './permissions.js';
@@ -194,15 +195,26 @@ async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
     const build = { appVersion: detected?.appVersion, buildNumber: String(detected?.buildNumber), appServerVersion: client.getAppServerVersion(),
         navigation: true, threadConfiguration: true, threadReconfiguration: true, compatibility: 'structural' };
     discoveredBuilds.add(build);
-    const accepted = connection; connection = null;
-    return { manager, client, postbox, build, dispose: accepted.dispose, check() {
+    const accepted = connection;
+    const check = () => {
         // Discovery scans candidates once. Steady-state callbacks verify the
         // captured owner and bindings without rereading unrelated host services.
         accepted.check();
         if (loadedAsset('shared') !== sharedUrl ||
             postboxExports.some(key => module[key] !== postbox) || client.getAppServerVersion() !== build.appServerVersion)
             throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
-    } };
+    };
+    let notifications;
+    if (manager.rpc) {
+        const current=()=>{if(signal?.aborted)throw fail('adapter_deactivated','Desktop adapter retired during discovery');check();};
+        const response = await fetch(sharedUrl, {credentials:'omit',signal});current();
+        if (!response.ok || response.url !== sharedUrl) throw fail('desktop_notification_stream_drift','Unable to read the current Native notification stream');
+        const source = await response.text();current();
+        notifications = nativePublishedNotifications({namespace:module,selection:publishedNotificationExports(source),postbox,check});
+    }
+    if (signal?.aborted) throw fail('adapter_deactivated','Desktop adapter retired during discovery');
+    connection = null;
+    return { manager, client, postbox, notifications, build, dispose: accepted.dispose, check() {check();notifications?.check();} };
     } finally {
         signal?.removeEventListener('abort', aborted);
         retire();
@@ -884,7 +896,11 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         ingress = attachNativeIngress({postbox, client, dispatch:intercept});
         if (manager.rpc) cleanups.push(manager.onError(markUnavailable));
         Object.defineProperty(globalThis, symbol, { value: publicApi, configurable: true });
-        cleanups.push(manager.addNotificationCallback(['thread/started', 'turn/started', 'turn/completed', 'item/started', 'item/completed', 'item/agentMessage/delta', 'item/commandExecution/outputDelta', 'serverRequest/resolved'], receive));
+        const notificationMethods=['thread/started','turn/started','turn/completed','item/started','item/completed','item/agentMessage/delta','item/commandExecution/outputDelta','serverRequest/resolved'];
+        if (manager.rpc) {
+            if (!connection.notifications) throw fail('desktop_notification_stream_drift','Native published notifications are unavailable');
+            cleanups.push(connection.notifications.subscribe(notificationMethods,receive,markUnavailable));
+        } else cleanups.push(manager.addNotificationCallback(notificationMethods,receive));
         cleanups.push(manager.addConversationStateCallback(threadId => { try { check(); syncApprovals(threadId)?.catch(error=>{if(alive)markUnavailable(error);}); refreshLoaded(threadId); refreshSelection(threadId); permissions.observe(threadId); } catch (error) { markUnavailable(fail(error.code ?? 'desktop_approval_schema_drift', error.message)); } }));
         if (typeof manager.addConversationRemovedCallback === 'function') cleanups.push(manager.addConversationRemovedCallback(threadId => {
             try { check(); refreshLoaded(threadId); } catch (error) { markUnavailable(error); }

@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { reactFactories } from '../frontend/src/adapter/react-factories.js';
 import { createWorkspaceDiscovery } from '../frontend/src/adapter/workspace-discovery.js';
+import {nativePublisherScript,nativePublisherSource} from './support/native-published-fixture.mjs';
 const desktop = readFileSync(new URL('../bundled/codex-desktop-adapter/renderer.js', import.meta.url), 'utf8');
 function fixture() {
   const context = vm.createContext({ module:{exports:{}},setTimeout,clearTimeout,queueMicrotask,AbortController,crypto:{randomUUID},location:{origin:'app://-',pathname:'/index.html'} });
@@ -129,6 +130,9 @@ test('unlisted build, renamed exports and backend version pass actual contracts 
 });
 function rpcFixture() {
   const f=largeShell();f.context.fixtureNative=f.native;
+  vm.runInContext('var postbox=fixtureNative.postbox;'+nativePublisherScript+'initializeNativePublisher();',f.context);
+  f.module.NativeBus=vm.runInContext('Dispatcher',f.context);f.module.PublishedMessages=vm.runInContext('stream',f.context);f.module.Transport=f.native.postbox;
+  f.context.fetch=async url=>({ok:true,url,text:async()=>nativePublisherSource});
   const state=vm.runInContext(`(()=>{
     const f=fixtureNative,calls=[],subscriptions=[],rpc=function(){};
     rpc.getHostId=async()=>{calls.push('getHostId');return 'local';};
@@ -179,6 +183,18 @@ test('RPC discovery cancellation closes its driver before the original host read
   controller.abort();assert.equal(tracked.candidates[0].disposed,1);complete();await assert.rejects(pending);
   assert.equal(tracked.candidates.length,1);assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
 });
+test('published-stream discovery failures and cancellation retire the untransferred RPC owner',async()=>{
+  for(const phase of ['fetch','body','cancel']){
+    const f=rpcFixture(),tracked=trackedRpcProbe(f),controller=new AbortController(),failure=new Error('notification source failed');let finish,announce;
+    const started=new Promise(resolve=>{announce=resolve;});
+    f.context.fetch=()=>new Promise((resolve,reject)=>{finish=()=>phase==='fetch'?reject(failure):resolve({ok:true,url:f.native.urls[0].href,text:()=>phase==='body'?Promise.reject(failure):nativePublisherSource});announce();});
+    const pending=tracked.probe(async()=>f.module,1000,controller.signal);await started;
+    if(phase==='cancel'){controller.abort();assert.equal(tracked.candidates[0].disposed,1);}
+    finish();await assert.rejects(pending,error=>phase==='cancel'?error.code==='adapter_deactivated':error===failure);
+    assert.equal(tracked.candidates[0].disposed,1);assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
+    assert.equal(f.module.PublishedMessages.handlers.has('mcp-notification'),false);
+  }
+});
 test('RPC discovery proves the current same-scope HostClient and request client without preparing conversations',async()=>{
   const f=rpcFixture(),connection=await f.probe();
   assert.equal(connection.manager.rpc,true);assert.equal(connection.client,f.native.client);assert.deepEqual([...f.state.calls],['getHostId','getCachedThreadIds']);
@@ -195,7 +211,25 @@ test('RPC Desktop installs owned subscriptions and snapshots only the selected v
   assert.equal(f.state.calls.includes('getConversation:metadata-only'),false);
   assert.equal(f.state.calls.filter(value=>value.startsWith('getConversation:')).every(value=>value==='getConversation:long-task'),true);
   adapter.dispose();await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(f.state.subscriptions.length,5);assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
+  assert.equal(f.state.subscriptions.length,4);assert.equal(f.state.subscriptions.every(sub=>sub.unsubscribed===1&&sub.released===1),true);
+  assert.equal(f.module.PublishedMessages.handlers.has('mcp-notification'),false);
+});
+test('RPC Desktop takes creation and turn notifications from one Native published stream, never the raw RPC stream',async()=>{
+  const plain=value=>JSON.parse(JSON.stringify(value));
+  const f=rpcFixture(),connection=await f.probe(),bus=f.module.PublishedMessages,native=[];
+  const releaseNative=bus.subscribe('mcp-notification',message=>native.push(message));
+  const adapter=vm.runInContext('createAdapter',f.context)(connection,{rpc:{provide(){},unavailable(){}},reportDiagnostic(){},onDeactivate:()=>()=>{}});
+  await new Promise(resolve=>setImmediate(resolve));const before=await adapter.api.readEvents({limit:100});
+  assert.equal(f.state.subscriptions.some(value=>value.spec.type==='notification'),false);
+  const published=method=>({type:'mcp-notification',hostId:'local',method,params:method==='thread/started'?{thread:{id:'prewarmed-main',source:'desktop',turns:[]}}:{threadId:'prewarmed-main',turn:{id:'turn-main',status:'inProgress',items:[]}}});
+  // Native's unpublished prewarm response is not a window notification.
+  assert.deepEqual(plain((await adapter.api.readEvents({cursor:before.cursor})).events),[]);
+  const created=published('thread/started'),started=published('turn/started');bus.deliverMessage('mcp-notification',created);bus.deliverMessage('mcp-notification',started);
+  const ordinary={...created,params:{thread:{id:'ordinary-main',source:'desktop',turns:[]}}};bus.deliverMessage('mcp-notification',ordinary);
+  const events=plain((await adapter.api.readEvents({cursor:before.cursor,limit:100})).events);
+  assert.deepEqual(events.map(value=>[value.type,value.thread?.id??value.threadId]),[['thread.started','prewarmed-main'],['turn.started','prewarmed-main'],['thread.started','ordinary-main']]);
+  assert.equal(events[0].thread.isSubagent,false);assert.equal(native[0],created);assert.equal(native[1],started);assert.equal(native[2],ordinary);
+  adapter.dispose();assert.equal(bus.handlers.get('mcp-notification').size,1);releaseNative();
 });
 test('partial, remote, unbound and ambiguous connections cannot acquire a transport',async()=>{
   for(const mutate of [f=>{f.native.node.familyBindings.get(f.native.clientFamily).clear();},f=>{f.native.manager.getHostId=()=> 'remote';},f=>{f.native.clientFamily.scope={};}]){
