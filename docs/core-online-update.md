@@ -8,6 +8,25 @@ Platform scope is explicit: Windows portable/isolated-client packages support th
 
 ## Release payload and selection
 
+The rc.22 implementation changes resident observer and Rust updater code. Its
+Windows release provides a complete runtime package and matching setup EXE.
+Both schema-1 and schema-2 catalogs select that complete runtime package.
+No targeted rc.21 online artifact is provided for
+the new Native target; component activation cannot supply this resident repair.
+
+Existing rc.20/rc.21 MSI owners must save their work, fully quit the client and
+run the rc.22 setup directly. Their running updater can reject Windows' shared
+PowerShell executable before installation starts. The repair becomes active
+after rc.22 is installed; the newer files cannot repair an older resident
+process. Setup retains the registered folder, scope and feature choices.
+
+Codlet setup does not install the official Native MSIX. Finish that client's
+update through its existing update process, fully quit any client it opens,
+then start the installed Codlet shortcut or launcher. The new Native target's
+installed acceptance and public artifact/catalog identities are recorded in the
+[rc.22 validation](releases/1.0.0-rc.22/validation.md) and
+[publication record](releases/1.0.0-rc.22/publication.md).
+
 `Build-WindowsRelease.ps1` builds Core once and produces the complete setup, complete runtime ZIP, compatible online ZIPs and their manifests from that source revision. See [Windows release delivery](windows-release-delivery.md) for commands and installer measurement.
 
 The `codlet-update-managed-v2.json` catalog uses schema 2. Each targeted Windows portable artifact includes `residentSha256`: SHA-256 of the ordinally sorted resident file records, encoded as `path + NUL + decimal bytes + NUL + lowercase sha256 + LF`. Managed runtime installations bind the executable and Node pin; bundled runtime installations additionally bind the Node executable and license. The selector prefers an exact resident match and otherwise selects the complete artifact. The legacy `codlet-update-managed.json` remains schema 1 and contains complete packages only.
@@ -66,7 +85,7 @@ Unknown and rolled-back lifecycle completions preserve the first eight target fa
 
 Complete installation requests stage incompatible updates with `phase: "deferred"`, `activation.mode: "nextStart"` and a pinned `runtime-update-next-start.json` intent. They emit no generic install request, quit call or launcher command. On successful natural Native exit, the owned probe, lab or macOS lifecycle can prepare a fresh checked helper plan marked `activateOnNextStart`. The helper waits for the exact owner identities to retire, installs the candidate, and returns `installedDeferred` without launching a Native process. Portable/macApp helpers replace their own files; Windows MSI installations use the verified setup EXE from the same release, preserving Windows Installer's ownership, scope and feature choices. An explicitly requested restart remains a separate API/action.
 
-The current source permits hard links for the checked, read-only system restart
+The rc.22 implementation permits hard links for the checked, read-only system restart
 executable in both MSI plan preparation and helper validation, as the portable
 path already does. Its digest is checked again before launch. Installer payloads,
 copied launcher scripts and mutable update files retain strict link rejection.

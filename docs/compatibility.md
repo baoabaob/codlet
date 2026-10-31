@@ -21,15 +21,39 @@ The project's current platform scope is based on the official [Windows deploymen
 
 ## Client integration
 
-The Windows x64 local candidate, Core **1.0.0-rc.20**, passed actual isolated
-Native acceptance on package `26.1023.6123.0` / app `26.1023.50603` / build
-`22391`, and regression checks on `26.1021.3705.0` / app `26.1021.31345` /
-build `21828`. The same production executable covered conversations, permission
-reads, classic/rail transitions, project/list grouping and normal shutdown;
-[rc.20 validation](releases/1.0.0-rc.20/validation.md) records its exact scope.
-The final release and Microsoft distribution responses still supplied `.6123.0`;
-the separate Store notification for `26.1023.6621.0` is not an acceptance record
-for that package. Remote rc.20 publication remains separate.
+The published Windows x64 **1.0.0-rc.22** supports official package
+`26.1027.3384.0` / app `26.1027.30824` / build `22943`, with Desktop `0.2.22`
+and UI `0.1.19`. Its exact `b32fc5e`/`c30f696c…` production package passed an
+actual rc.21 setup upgrade, same-version maintenance and installed Native,
+sidebar, Split and permission-read checks. The original harness retained a
+settled update-network error; one new check by the same Core then succeeded
+without network changes. See [rc.22 validation](releases/1.0.0-rc.22/validation.md)
+for startup recovery, preceding failures and execution boundaries, and the
+[publication record](releases/1.0.0-rc.22/publication.md) for public artifacts.
+The profile used a synthetic loopback API-key backend and an existing verified
+Node pin. Real OAuth/account/settings/Statsig network paths and first-time Node
+download were not validated. The Native menu has no explicit read-only option,
+so that permission mutation was unsupported and not executed.
+
+The independently published public catalog is revision `2026103101`, with eight
+records, including this accepted package/pair. The final production binary keeps
+its older bundled baseline `2026102801`; source metadata and public advisory
+catalog publication do not rebuild it. Their exact commits and public raw-body
+SHA-256 are recorded in the publication record.
+
+The published Core **1.0.0-rc.20** passed isolated Native acceptance on package
+`26.1023.6123.0` / app `26.1023.50603` / build `22391`, and regression checks
+on `26.1021.3705.0` / app `26.1021.31345` / build `21828`. The same production
+executable covered conversations, permission reads, classic/rail transitions,
+project/list grouping and normal shutdown; [rc.20 validation](releases/1.0.0-rc.20/validation.md)
+retains its scope. The [rc.21 record](releases/1.0.0-rc.21/validation.md) separately
+records the Desktop HTTP correction and direct-setup recovery on the later
+installed package `26.1023.6621.0`.
+
+The rc.22 update requires the complete runtime and a new start. rc.20/rc.21 MSI
+owners must run the setup EXE directly after saving work and fully quitting the
+client; the handoff repair takes effect in the newly installed Core. Official
+Native updates remain separate from Codlet setup.
 
 Core's maintained Native startup and source mappings live in `codex/compatibility/client-profiles.json`. The retired pre-v1 catalog is preserved in [the Core history archive](history/core/client-profiles-before-v1.json). Actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Core probes individual interfaces on an unlisted build; a missing or ambiguous contract makes the affected capability unavailable or unknown. The runtime skill discovers the mounted local request client independently. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists. Local candidate evidence does not rewrite historical acceptance records.
 
@@ -72,11 +96,18 @@ bundled baseline and does not wait for network access. Diagnostics report the
 source, catalog revision, last successful check and refresh error. The record
 is a compatibility fact, not evidence that an official client update exists.
 
-To publish an acceptance record, edit only `tested-client-versions.json`, raise
-its monotonically increasing `revision`, validate the catalog and commit/push
-it to `main`. Do not change the baseline or bump Core merely to record another
-verified package. Reusing a revision with different content or serving an older
-revision is rejected. A deliberate correction/removal uses a new revision.
+To publish an acceptance record, edit the fixed public
+`tested-client-versions.json`, raise its monotonically increasing `revision`,
+validate the catalog and commit/push it to `main`. The independently published
+catalog does not replace the baseline already compiled into an accepted Core.
+Reusing a revision with different content or serving an older revision is
+rejected. A deliberate correction/removal uses a new revision.
+
+The rc.22 source branch requires its checked-in catalog and baseline to match.
+After acceptance, synchronize those two source files in one metadata commit,
+separate from the fixed public catalog's `main` commit. This prepares later
+builds' baseline while preserving the accepted installer's original bytes.
+Neither metadata publication requires rebuilding that accepted binary.
 Review the Core compatibility modules and obtain real-client evidence before
 adding records; an interface change still needs the appropriate implementation repair.
 
