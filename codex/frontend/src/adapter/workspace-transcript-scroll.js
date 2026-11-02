@@ -68,8 +68,13 @@ export function createTranscriptScroll({mount, body, scroll, threadId, check, re
     return next;
   };
   const scale = () => {
-    const rect = scroll.getBoundingClientRect();
-    const value = scroll.offsetHeight > 0 ? rect.height / scroll.offsetHeight : 1;
+    const rect = scroll.getBoundingClientRect(), style = scroll.ownerDocument.defaultView.getComputedStyle(scroll);
+    // offsetHeight rounds fractional pane heights to whole CSS pixels. That
+    // rounding must not become a zoom factor for a long message's anchor.
+    const height = Number.parseFloat(style.height), extra = style.boxSizing === 'border-box' ? 0 :
+      ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].reduce((sum, key) => sum + (Number.parseFloat(style[key]) || 0), 0);
+    const layoutHeight = Number.isFinite(height) && height + extra > 0 ? height + extra : scroll.offsetHeight;
+    const value = layoutHeight > 0 ? rect.height / layoutHeight : 1;
     return Number.isFinite(value) && value > 0 ? value : 1;
   };
   const findUnit = anchor => [...body.querySelectorAll('[data-content-search-unit-key]')].find(node =>
