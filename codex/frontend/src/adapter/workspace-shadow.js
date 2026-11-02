@@ -1,5 +1,17 @@
 import { workspaceError } from './workspace-dom.js';
 
+// The viewport owns one no-drag rectangle. Descendant Native controls must not
+// contribute offscreen app-region boxes when they scroll beyond that viewport.
+export const TRANSCRIPT_APP_REGION_STYLE = '[data-codlet-workspace-transcript-root],[data-codlet-workspace-transcript-root] *,[data-codlet-workspace-transcript-root]::before,[data-codlet-workspace-transcript-root]::after,[data-codlet-workspace-transcript-root] *::before,[data-codlet-workspace-transcript-root] *::after{-webkit-app-region:initial!important;app-region:initial!important}';
+export function createTranscriptContainer(document, parent) {
+  const container = document.createElement('div'), style = document.createElement('style');
+  container.dataset.codletWorkspaceTranscriptRoot = '';
+  container.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;position:relative;';
+  style.dataset.codletWorkspaceTranscriptStyle = ''; style.textContent = TRANSCRIPT_APP_REGION_STYLE;
+  parent.append(style, container);
+  return container;
+}
+
 // Reuse loaded Native resources without importing consumer or Core UI styles.
 export function createTranscriptIsolation({ document, report }) {
   const records = new Set(); let observer;
@@ -28,10 +40,7 @@ export function createTranscriptIsolation({ document, report }) {
   }
   function refresh() { for (const record of records) try { sync(record); } catch (error) { report(error); } }
   function create(wrapper) {
-    const shadow = wrapper.attachShadow({ mode: 'open' }), container = document.createElement('div');
-    container.dataset.codletWorkspaceTranscriptRoot = '';
-    container.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;position:relative;';
-    shadow.append(container);
+    const shadow = wrapper.attachShadow({ mode: 'open' }), container = createTranscriptContainer(document, shadow);
     const record = { shadow, container, links: new Map() }; records.add(record);
     function release() { if (!records.delete(record)) return; for (const entry of record.links.values()) entry.dispose(); record.links.clear(); if (!records.size) { observer?.disconnect(); observer = null; } }
     try {

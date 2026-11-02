@@ -1,6 +1,7 @@
 import { workspaceError, OWNED, providersFor, wrapProviders } from './workspace-dom.js';
-import { createTranscriptIsolation } from './workspace-shadow.js';
+import { createTranscriptIsolation, createTranscriptContainer } from './workspace-shadow.js';
 import { peekConversation } from '../desktop/native-manager-rpc.js';
+import { createTranscriptScroll } from './workspace-transcript-scroll.js';
 
 export function transcriptOptions(options, previous = { hostId: 'local', readOnly: true, trackReadState: false }) {
   if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['threadId', 'hostId', 'readOnly', 'trackReadState', 'onState'].includes(key)))
@@ -78,11 +79,12 @@ export function createTranscripts({ document, load, surface, check, report, isol
     // retirement before a consumer attaches a catch creates no unhandled error.
     ready.catch(() => {});
     const wrapper = document.createElement('div'); wrapper.dataset.codletWorkspaceOwned = owned;
-    // Keep Native fixed-position descendants inside this viewport and stop a
-    // consumer's draggable-region declaration from escaping through them.
-    wrapper.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;position:relative;contain:layout paint;-webkit-app-region:initial;';
+    // One viewport box owns input hit testing. Its Native children are kept
+    // visually inside it and cannot contribute offscreen window-drag regions.
+    wrapper.dataset.codletWorkspaceTranscriptViewport = '';
+    wrapper.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;position:relative;contain:layout paint;-webkit-app-region:no-drag;app-region:no-drag;';
     container.append(wrapper); record.wrapper = wrapper; records.add(record); containers.add(container);
-    let scroll, settled = false, readyObserver;
+    let scroll, viewport, settled = false, readyObserver;
     const fail = error => { if (record.disposed) return; state(record, 'error', error); report(error); if (!settled) { settled = true; rejectReady(error); } };
     function tryReady() {
       if (record.disposed || !record.committed || record.bindingThread !== record.options.threadId || record.phase !== 'loading') return;
@@ -93,7 +95,16 @@ export function createTranscripts({ document, load, surface, check, report, isol
       const body = scroller.querySelector('[data-thread-find-target="conversation"]');
       const hasHistory = !!conversation.turns?.length || conversation.turnHistory?.kind === 'canonical' && conversation.turnHistory.history?.islands?.some(island => island.entries?.length);
       if (!body || hasHistory && !body.textContent.trim()) return;
-      scroll = scroller; readyObserver?.disconnect(); state(record, 'ready');
+      scroll = scroller;
+      if (!viewport) {
+        const epoch = record.epoch, threadId = record.options.threadId;
+        viewport = createTranscriptScroll({mount:record.mount, body, scroll, threadId, report, check() {
+          check();
+          if (record.disposed || record.epoch !== epoch || record.bindingThread !== threadId)
+            throw workspaceError('workspace_retired', 'The transcript scroll owner retired');
+        }});
+      }
+      readyObserver?.disconnect(); state(record, 'ready');
       if (metrics) metrics.end('transcript.ready', record.started, { viewId:record.viewId, threadAlias:record.epoch });
       if (!settled) { settled = true; resolveReady(); }
     }
@@ -127,6 +138,7 @@ export function createTranscripts({ document, load, surface, check, report, isol
       record.started = metrics?.start();
       record.committed = false; scroll = null;
       try {
+        viewport?.dispose(); viewport = null;
         const N = await ensure();
         if (record.disposed || epoch !== record.epoch) return;
         if (N.manager.rpc && record.observedThread !== record.options.threadId) {
@@ -145,7 +157,7 @@ export function createTranscripts({ document, load, surface, check, report, isol
         const R = N.React, h = R.createElement;
         if (!record.root) {
           record.isolation ??= isolation?.create(wrapper);
-          record.mount = record.isolation?.container ?? wrapper;
+          record.mount = record.isolation?.container ?? createTranscriptContainer(document, wrapper);
           if (record.isolation) await record.isolation.ready;
           if (record.disposed || epoch !== record.epoch) return;
           record.root = N.Client.createRoot(record.mount, { onUncaughtError: fail, onCaughtError: fail });
@@ -196,20 +208,20 @@ export function createTranscripts({ document, load, surface, check, report, isol
           scheduleUpdate();
         }
       },
-      getScrollPosition() { check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired'); if (!scroll) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready'); return { top: scroll.scrollTop, left: scroll.scrollLeft }; },
+      getScrollPosition() { check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired'); if (!viewport) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready'); return viewport.capture(); },
       scrollToLatest() {
         check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired');
-        if (!scroll) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready');
-        scroll.scrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+        if (!viewport) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready');
+        return viewport.latest();
       },
       setScrollPosition(value) {
         check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired');
-        if (!value || Object.keys(value).some(key => !['top', 'left'].includes(key)) || !['top', 'left'].every(key => Number.isFinite(value[key]))) throw workspaceError('invalid_argument', 'Invalid transcript scroll position');
-        if (!scroll) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready'); scroll.scrollTop = value.top; scroll.scrollLeft = value.left;
+        if (!viewport) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready');
+        return viewport.restore(value);
       },
       dispose() {
         if (record.disposed) return;
-        record.disposed = true; record.epoch++; readyObserver?.disconnect(); updates.delete(record); state(record, 'disposed'); records.delete(record); containers.delete(container);
+        record.disposed = true; record.epoch++; viewport?.dispose(); viewport = null; readyObserver?.disconnect(); updates.delete(record); state(record, 'disposed'); records.delete(record); containers.delete(container);
         record.observation?.dispose();
         if (!settled) { settled = true; rejectReady(workspaceError('workspace_retired', 'Transcript retired before readiness')); }
         if (record.root) native.DOM.flushSync(() => record.root.unmount()); record.isolation?.dispose(); wrapper.remove(); scroll = null;

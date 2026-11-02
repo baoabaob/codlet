@@ -17,12 +17,18 @@ export interface WorkspaceSurface {
 export interface SurfaceOptions { hideBody?: boolean; hideHeader?: boolean; hideComposer?: boolean; composerEnabled?: boolean; rightPanelEnabled?: boolean }
 export interface TranscriptState { phase: 'loading' | 'ready' | 'error' | 'disposed'; threadId: string; hostId: 'local'; diagnostic: WorkspaceDiagnostic | null }
 export interface TranscriptOptions { threadId: string; hostId?: 'local'; readOnly?: boolean; trackReadState?: boolean; onState?: (state: TranscriptState) => unknown }
-export interface ScrollPosition { top: number; left: number }
+export interface ScrollPosition {
+  top: number; left: number;
+  /** Preserve Native following after later content measurement or viewport changes. */
+  followingLatest?: boolean;
+  /** Native reading location; retain it when caching a captured position. */
+  anchor?: { turnKey: string; unitKey: string; offset: number };
+}
 export interface TranscriptHandle {
   ready: Promise<void>; update(options: Partial<TranscriptOptions>): void; dispose(): void;
-  getScrollPosition(): ScrollPosition; setScrollPosition(position: ScrollPosition): void;
-  /** Scroll this ready transcript to its latest content using its actual viewport size. */
-  scrollToLatest(): void;
+  getScrollPosition(): ScrollPosition; setScrollPosition(position: ScrollPosition): Promise<void>;
+  /** Follow this ready transcript's latest content through its Native scroll controller. */
+  scrollToLatest(): Promise<void>;
 }
 export interface ComposerBinding { readonly threadId: string; readonly hostId: 'local'; readonly inputConfirmed: true; readonly submitDisabled: boolean }
 export interface ComposerRebindBinding extends ComposerBinding { readonly bindingRevision: number }

@@ -216,7 +216,7 @@ test('a transcript can reuse Native shell providers on a page without a main con
   N.Content=({conversationId})=>N.React.createElement('div',{className:'thread-scroll-container'},N.React.createElement('div',{'data-thread-find-target':'conversation'},'Native '+conversationId));f.discovery.transcript=async()=>N;
   const session=f.connect().session,box=f.document.createElement('div');f.document.body.append(box);
   const handle=session.mountTranscript(box,{threadId:'thread-b'});await handle.ready;
-  assert.equal(box.textContent,'Native thread-b');assert.equal(N.roots(),1);assert.equal(f.navigator.location.pathname,'/settings');handle.dispose();
+  assert.equal(box.querySelector('[data-thread-find-target="conversation"]').textContent,'Native thread-b');assert.equal(N.roots(),1);assert.equal(f.navigator.location.pathname,'/settings');handle.dispose();
 });
 
 test('surface leases compose, rebind after navigation and precisely restore attributes/priorities without clobbering a newer patch', async t => {
@@ -367,6 +367,28 @@ test('more than 4096 loaded summaries page completely and later additions and up
 
 function native(f) {
   const N = { ...f.window.eval(nativeSource + ';NativeShell;') }, context = N.React.createContext(null);
+  // Each rendered transcript owns the scroll context consumed by its content.
+  // Tests replace the content body while retaining that Native ownership shape.
+  let Content;
+  Object.defineProperty(N,'Content',{get:()=>Content,set(render){
+    const R=N.React,h=R.createElement,Scroll=R.createContext(null);
+    function Body(props){
+      const controller=R.useContext(Scroll),body=render(props);
+      return R.isValidElement(body)&&body.props.className==='thread-scroll-container'?R.cloneElement(body,{ref:controller.attach}):body;
+    }
+    Content=function NativeTranscript(props){
+      const scroll=R.useRef(null),following=R.useRef(false),controller=R.useMemo(()=>({
+        attach:node=>{scroll.current=node;},getScrollElement:()=>scroll.current,
+        getLastScrollDistanceFromBottomPx:()=>Math.max(0,scroll.current.scrollHeight-scroll.current.clientHeight-scroll.current.scrollTop),
+        shouldFollowContentGrowth:()=>following.current,holdViewport(){following.current=false;},
+        scrollToBottom({onStop}){following.current=true;scroll.current.scrollTop=Math.max(0,scroll.current.scrollHeight-scroll.current.clientHeight);onStop?.();},
+        scrollToDistanceFromBottomPx(value){scroll.current.scrollTop=scroll.current.scrollHeight-scroll.current.clientHeight-value;},
+        compensateScrollToDistanceFromBottomPx(value){scroll.current.scrollTop=scroll.current.scrollHeight-scroll.current.clientHeight-value;},
+        addUserScrollListener:()=>()=>{},
+      }),[]);
+      return h(Scroll.Provider,{value:controller},h(Body,{...props,scrollController:controller}));
+    };
+  }});
   const provider = { dependencies: { firstContext: { context, memoizedValue: 'native-app-scope' } }, return: f.current, child: f.current.child };
   for (let child = provider.child; child; child = child.sibling) child.return = provider;
   f.current.child = provider;
@@ -393,12 +415,28 @@ test('Native transcript mount inherits the inner AppScope instead of rendering a
   N.manager={getConversation:()=>({resumeState:'resumed',turns:[{}]}),addConversationStateCallback:()=>()=>{}};N.Scope=({children})=>children;N.composerScope={};N.composerValue=()=>({});N.ThreadSubscription=()=>null;
   N.Content=({conversationId})=>{if(R.useContext(Context).get('AppScope')!=='native')throw Error('Missing parent scope');return h('div',{className:'thread-scroll-container'},h('div',{'data-thread-find-target':'conversation'},'Native '+conversationId));};f.discovery.transcript=async()=>N;
   const session=f.connect().session,container=f.document.createElement('div');f.document.body.append(container);const handle=session.mountTranscript(container,{threadId:'thread-b'});await handle.ready;
-  assert.equal(container.textContent,'Native thread-b');assert.equal(f.diagnostics.some(value=>value.message==='Missing parent scope'),false);
+  assert.equal(container.querySelector('[data-thread-find-target="conversation"]').textContent,'Native thread-b');assert.equal(f.diagnostics.some(value=>value.message==='Missing parent scope'),false);
   const own=container.querySelector('.thread-scroll-container'),main=f.document.querySelector('main .thread-scroll-container');main.scrollTop=120;own.scrollLeft=9;
   Object.defineProperties(own,{scrollHeight:{value:2400,configurable:true},clientHeight:{value:400,configurable:true}});
-  handle.scrollToLatest();assert.deepEqual(plain(handle.getScrollPosition()),{top:2000,left:9});assert.equal(main.scrollTop,120);
-  Object.defineProperty(own,'scrollHeight',{value:260});handle.scrollToLatest();assert.equal(own.scrollTop,0);
+  await handle.scrollToLatest();assert.deepEqual(plain(handle.getScrollPosition()),{top:2000,left:9,followingLatest:true});assert.equal(main.scrollTop,120);
+  Object.defineProperty(own,'scrollHeight',{value:260});await handle.scrollToLatest();assert.equal(own.scrollTop,0);
   handle.dispose();assert.throws(()=>handle.scrollToLatest(),{code:'workspace_retired'});
+});
+
+test('transcript drag-region isolation covers only its Native descendants and retires with the viewport',async t=>{
+  const f=fixture(t),N=native(f),h=N.React.createElement;
+  N.manager={getConversation:()=>({resumeState:'resumed',turns:[{}]}),addConversationStateCallback:()=>()=>{}};
+  N.Scope=({children})=>children;N.composerScope={};N.composerValue=()=>({});N.ThreadSubscription=()=>null;
+  N.Content=()=>h('div',{className:'thread-scroll-container'},h('div',{'data-thread-find-target':'conversation'},h('button',{className:'no-drag'},'Native control')));
+  f.discovery.transcript=async()=>N;
+  const box=f.document.createElement('div'),external=f.document.createElement('button');external.className='no-drag';f.document.body.append(box,external);
+  const header=f.document.querySelector('[data-app-shell-main-titlebar]'),handle=f.connect().session.mountTranscript(box,{threadId:'drag-scope'});await handle.ready;
+  const viewport=box.querySelector('[data-codlet-workspace-transcript-viewport]'),root=box.querySelector('[data-codlet-workspace-transcript-root]'),style=box.querySelector('style'),button=root.querySelector('button');
+  const rules=[...style.sheet.cssRules].filter(rule=>rule.style.getPropertyValue('app-region'));
+  assert.ok(rules.some(rule=>button.matches(rule.selectorText)));
+  for(const node of [viewport,header,external])assert.equal(rules.some(rule=>node.matches(rule.selectorText)),false);
+  assert.ok(style.textContent.includes('::before')&&style.textContent.includes('::after'),'pseudo-element drag boxes share the descendant scope');
+  handle.dispose();assert.equal(viewport.isConnected,false);assert.equal(style.isConnected,false);assert.equal(header.isConnected,true);assert.equal(external.isConnected,true);
 });
 
 function composerNative(f,{wrong=false}={}){
@@ -589,9 +627,9 @@ test('transcripts share discovery/history/listener, preserve roots and scroll on
   await Promise.all(handles.map(handle => handle.ready)); await tick();
   assert.equal(discoveries, 1); assert.equal(loads, 1); assert.equal(callbacks.size, 1); assert.equal(N.roots(), 12); assert.equal(interests, 12);
   handles[0].setScrollPosition({ top: 123, left: 9 }); handles[0].update({ readOnly: false, trackReadState: true }); await tick();
-  assert.deepEqual(plain(handles[0].getScrollPosition()), { top: 123, left: 9 }); assert.equal(N.roots(), 12); assert.equal(loads, 1); assert.equal(interests, 12);
+  assert.deepEqual(plain(handles[0].getScrollPosition()), { top: 123, left: 9, followingLatest:false}); assert.equal(N.roots(), 12); assert.equal(loads, 1); assert.equal(interests, 12);
   assert.deepEqual(states, ['loading', 'ready']);
-  handles[0].setScrollPosition({ top: -41, left: -9 }); assert.deepEqual(plain(handles[0].getScrollPosition()), { top: -41, left: -9 });
+  handles[0].setScrollPosition({ top: -41, left: -9 }); assert.deepEqual(plain(handles[0].getScrollPosition()), { top: -41, left: -9, followingLatest:false});
   handles[0].update({ threadId: 'thread-b' }); await tick(); await tick(); assert.equal(loads, 2); assert.equal(N.roots(), 12);
   owner.ctx.retire(); assert.equal(callbacks.size, 0); assert.equal(interests, 0); assert.equal(f.document.querySelectorAll('[data-codlet-workspace-owned]').length, 0);
   assert.throws(() => handles[0].getScrollPosition(), { code: 'workspace_retired' });
@@ -609,7 +647,7 @@ test('more than 32 transcripts per owner and Target render, reuse containers and
   for(const view of all)assert.equal(view.box.querySelector('[data-thread-find-target]').textContent,'body '+view.id);
   const bodies=all.map(view=>view.box.querySelector('[data-thread-find-target]'));
   for(const view of all){view.handle.setScrollPosition({top:61,left:-5});view.handle.update({readOnly:false,trackReadState:true});}await tick();
-  for(let index=0;index<all.length;index++){assert.equal(all[index].box.querySelector('[data-thread-find-target]'),bodies[index]);assert.deepEqual(plain(all[index].handle.getScrollPosition()),{top:61,left:-5});}
+  for(let index=0;index<all.length;index++){assert.equal(all[index].box.querySelector('[data-thread-find-target]'),bodies[index]);assert.deepEqual(plain(all[index].handle.getScrollPosition()),{top:61,left:-5, followingLatest:false});}
   assert.equal(N.roots(),88);assert.equal(active.size,88);
   assert.throws(()=>first.session.mountTranscript(a[0].box,{threadId:'duplicate-thread'}),{code:'invalid_argument'});
   const reused=a[32];reused.handle.dispose();assert.equal(reused.box.childNodes.length,0);reused.handle=first.session.mountTranscript(reused.box,{threadId:'many-reused-container'});await reused.handle.ready;
@@ -656,7 +694,7 @@ test('main route switches retain ready transcript roots, providers, subscription
   const slot=owner.session.createSlot('workspace.overlay'),box=f.document.createElement('div');slot.container.append(box);const handle=owner.session.mountTranscript(box,{threadId:'cached-one',onState:value=>phases.push(value.phase)});await handle.ready;await tick();
   const scroller=box.querySelector('.thread-scroll-container'),body=box.querySelector('[data-thread-find-target]');handle.setScrollPosition({top:-37,left:4});
   for(const id of ['thread-b','thread-c','thread-a']){f.navigator.location.pathname='/local/'+id;f.document.querySelector('nav').append(f.document.createElement('span'));await f.flush();}
-  assert.equal(N.roots(),1);assert.equal(mounts,1);assert.equal(unmounts,0);assert.equal(loads,0);assert.equal(box.querySelector('.thread-scroll-container'),scroller);assert.equal(box.querySelector('[data-thread-find-target]'),body);assert.deepEqual(plain(handle.getScrollPosition()),{top:-37,left:4});assert.deepEqual(phases,['loading','ready']);
+  assert.equal(N.roots(),1);assert.equal(mounts,1);assert.equal(unmounts,0);assert.equal(loads,0);assert.equal(box.querySelector('.thread-scroll-container'),scroller);assert.equal(box.querySelector('[data-thread-find-target]'),body);assert.deepEqual(plain(handle.getScrollPosition()),{top:-37,left:4, followingLatest:false});assert.deepEqual(phases,['loading','ready']);
   const lease=owner.session.acquireSurface({hideBody:true});assert.equal(slot.container.isConnected,true);assert.equal(slot.container.closest('[inert]'),null);lease.dispose();
 });
 
@@ -687,7 +725,7 @@ test('shadow transcripts reuse Native styles, stream within their root, retain s
   const host=box.firstElementChild,root=host.shadowRoot;assert.ok(root);root.querySelector('link').dispatchEvent(new f.window.Event('load'));await handle.ready;await tick();
   assert.equal(box.querySelector('.thread-scroll-container'),null);const scroller=root.querySelector('.thread-scroll-container'),body=root.querySelector('[data-thread-find-target]');handle.setScrollPosition({top:-43,left:7});let outside=0;const observer=new f.window.MutationObserver(records=>outside+=records.length);observer.observe(f.document.body,{childList:true,subtree:true,characterData:true});
   text='streamed native token';for(const fn of listeners)fn();await tick();await tick();assert.equal(body.textContent,text);assert.equal(outside,0);
-  handle.update({readOnly:false});await tick();assert.equal(root.querySelector('.thread-scroll-container'),scroller);assert.equal(root.querySelector('[data-thread-find-target]'),body);assert.deepEqual(plain(handle.getScrollPosition()),{top:-43,left:7});assert.deepEqual(states,['loading','ready']);assert.equal(N.roots(),1);
+  handle.update({readOnly:false});await tick();assert.equal(root.querySelector('.thread-scroll-container'),scroller);assert.equal(root.querySelector('[data-thread-find-target]'),body);assert.deepEqual(plain(handle.getScrollPosition()),{top:-43,left:7, followingLatest:false});assert.deepEqual(states,['loading','ready']);assert.equal(N.roots(),1);
   sheet.media='print';await tick();assert.equal(root.querySelector('link').media,'print');const consumerSheet=f.document.createElement('link');consumerSheet.rel='stylesheet';consumerSheet.href='codlet://consumer/theme.css';f.document.head.append(consumerSheet);await tick();assert.equal(root.querySelectorAll('link').length,1);
   observer.disconnect();owner.ctx.retire();assert.equal(effects,0);assert.equal(callbacks.size,0);assert.equal(listeners.size,0);assert.equal(root.querySelectorAll('link').length,0);assert.equal(host.isConnected,false);
 });
