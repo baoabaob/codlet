@@ -227,9 +227,16 @@ fn diagnostic_status<'a>(
     values: impl Iterator<Item = &'a PluginDiagnostic>,
 ) -> (Vec<PluginDiagnostic>, bool) {
     let mut values: Vec<_> = values.collect();
-    values.sort_by(|left, right| {
-        (left.level != "error", &left.code).cmp(&(right.level != "error", &right.code))
-    });
+    let priority = |diagnostic: &PluginDiagnostic| {
+        if diagnostic.level == "error" {
+            0
+        } else if diagnostic.level == "info" && diagnostic.code == "ui_page_registration_pending" {
+            1
+        } else {
+            2
+        }
+    };
+    values.sort_by(|left, right| (priority(left), &left.code).cmp(&(priority(right), &right.code)));
     let mut truncated = values.len() > MAX_STATUS_DIAGNOSTICS_PER_PLUGIN;
     let diagnostics = values
         .into_iter()
@@ -332,5 +339,51 @@ mod tests {
             "truncated text is explicit even when no records were omitted"
         );
         assert_eq!(message_only.len(), 1);
+    }
+
+    #[test]
+    fn diagnostic_exports_keep_explicit_page_readiness_ahead_of_ordinary_info() {
+        let mut source: Vec<_> = (0..MAX_STATUS_DIAGNOSTICS_PER_PLUGIN + 4)
+            .map(|index| PluginDiagnostic {
+                code: format!("aaa_info_{index:02}"),
+                message: "Waiting for work".into(),
+                level: "info".into(),
+            })
+            .collect();
+        source.push(PluginDiagnostic {
+            code: "ui_page_registration_pending".into(),
+            message: "Native page registration is pending".into(),
+            level: "info".into(),
+        });
+        let (diagnostics, incomplete) = diagnostic_status(source.iter());
+        assert!(incomplete);
+        assert_eq!(diagnostics.len(), MAX_STATUS_DIAGNOSTICS_PER_PLUGIN);
+        assert_eq!(diagnostics[0].code, "ui_page_registration_pending");
+
+        source.push(PluginDiagnostic {
+            code: "zz_current_error".into(),
+            message: "Native toolbar unavailable".into(),
+            level: "error".into(),
+        });
+        let (diagnostics, incomplete) = diagnostic_status(source.iter());
+        assert!(incomplete);
+        assert_eq!(diagnostics[0].code, "zz_current_error");
+        assert_eq!(diagnostics[1].code, "ui_page_registration_pending");
+
+        source.extend(
+            (0..MAX_STATUS_DIAGNOSTICS_PER_PLUGIN).map(|index| PluginDiagnostic {
+                code: format!("other_error_{index:02}"),
+                message: "Explicit failure".into(),
+                level: "error".into(),
+            }),
+        );
+        let (diagnostics, incomplete) = diagnostic_status(source.iter());
+        assert!(incomplete);
+        assert_eq!(diagnostics.len(), MAX_STATUS_DIAGNOSTICS_PER_PLUGIN);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.level == "error")
+        );
     }
 }
