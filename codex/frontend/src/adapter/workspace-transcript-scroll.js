@@ -142,7 +142,7 @@ export function createTranscriptScroll({mount, body, scroll, threadId, check, re
   };
   const restore = input => {
     const position = transcriptScrollPosition(input);
-    if (position.followingLatest === true) {scroll.scrollLeft=position.left;return latest();}
+    if (position.followingLatest === true) {owned();scroll.scrollLeft=position.left;return latest();}
     const binding = owned(), {controller, virtualizer} = binding;
     cancel(); controller.holdViewport(); scroll.scrollLeft=position.left;
     if (!position.anchor) {

@@ -122,6 +122,13 @@ test('repeated outer context providers keep the nearest lexical scroll owner',t=
   assert.equal(nativeTranscriptScrollBinding({mount:f.mount,body:f.body,scroll:f.scroll,threadId:'thread-a'}).owner,f.provider);
 });
 
+test('a retired Native owner rejects saved-tail restoration before any horizontal DOM write',t=>{
+  const f=fixture(t);let left=9,leftWrites=0;Object.defineProperty(f.scroll,'scrollLeft',{get:()=>left,set:value=>{leftWrites++;left=value;}});
+  f.provider.child=null;assert.equal(f.body.isConnected,true,'the stale DOM remains connected');
+  assert.throws(()=>f.handle.restore({top:0,left:27,followingLatest:true}),{code:'workspace_scroll_owner_changed'});
+  assert.equal(left,9);assert.equal(leftWrites,0);assert.deepEqual(f.writes,[]);
+});
+
 test('legacy finite offsets remain valid and malformed semantic states fail before a scroll dispatch',async t=>{
   const f=fixture(t);await f.handle.restore({top:123,left:-5});assert.equal(f.scroll.scrollTop,123);assert.equal(f.scroll.scrollLeft,-5);
   assert.deepEqual(transcriptScrollPosition({top:-41,left:-9}),{top:-41,left:-9});
