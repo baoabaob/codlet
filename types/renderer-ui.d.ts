@@ -38,7 +38,11 @@ export interface RendererUiPageOptions {
   onDeactivate?(): void;
 }
 export interface RendererUiPageHandle {
+  /** Reserved route while loading; null when Native declines an auxiliary window. */
   readonly path: string | null;
+  /** Settles after Native registers the route and requested toolbar. Feature-detect
+   * on older Core versions. Keep this wait outside plugin activate(). */
+  readonly ready?: Promise<Readonly<{ available: boolean; path: string | null }>>;
   dispose(): void;
   /** Updates the native navigation notification dot. Null clears it; feature-detect on older Core versions. */
   setBadge?(label: string | null): void;
@@ -69,7 +73,8 @@ export interface RendererUi {
     scope?: Pick<Element, 'contains'>;
     onCommit?(revision: number): void;
   }): RendererUiMount;
-  /** Requires codex.ui.navigation.page@1. Path is null in reviewed auxiliary windows. */
+  /** Requires codex.ui.navigation.page@1. Resolves when the registration is accepted;
+   * page.ready independently confirms Native readiness. */
   page(options: RendererUiPageOptions): Promise<Readonly<RendererUiPageHandle>>;
   /** Aborts the owner, unregisters pages and synchronously unmounts every root. */
   dispose(): void;
@@ -77,7 +82,8 @@ export interface RendererUi {
 export interface RendererUiFactory {
   readonly api: 2;
   create(): RendererUi;
-  /** Registers navigation without loading the UI SDK. The render callback receives
+  /** Accepts navigation without waiting for Native readiness or loading the UI SDK.
+   * page.ready settles when Native registration completes. The render callback receives
    * a page-scoped UI owner; leaving the page disposes that owner. Feature-detect
    * for compatibility with earlier API 2 runtimes. */
   page?(options: RendererUiPageOptions): Promise<Readonly<RendererUiPageHandle>>;

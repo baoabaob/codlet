@@ -55,11 +55,14 @@ const page = await context.codex.navigation.page({
   }
 });
 // page.dispose() unregisters this page; page.path can be null in an auxiliary window.
+// Outside activate(), await page.ready before depending on Native registration.
 ```
 
 `render` returns a complete ReactNode. Its optional toolbar is an owned DOM outlet, not a serializable control schema. Native route exit synchronously unmounts the React tree and disposes the page owner; callbacks describe activation/deactivation, not an independent floating overlay. On older API 2 runtimes without the factory helper, create an owner and call `ui.page` with the same options. Ordinary DOM mounting does not require a navigation provider.
 
-The page promise settles after Native confirms registration, before the user opens the page. During cold startup, its accepted lease carries the final registration result without repeating the RPC. A toolbar or route contract failure rejects the consumer's page promise and reports its diagnostic under that plugin. Owner retirement cancels the wait and removes the lease; an auxiliary window resolves with `path: null` and retains no page resources.
+The page promise resolves when Core accepts the registration. The handle's separate `ready` promise resolves to `{available: true, path}` after Native confirms the route and requested toolbar; it does not open or render the page. During cold startup, `path` holds the reserved route and the plugin has an explicit `ui_page_registration_pending` diagnostic. Keep readiness waits outside `activate()` so Native loading cannot consume the plugin activation deadline. Feature-detect `page.ready` on older Core versions.
+
+The accepted lease carries the terminal result without repeating the RPC. A toolbar or route contract failure rejects `page.ready` and reports `ui_page_registration_failed` under that plugin. Owner retirement or supersession cancels readiness and removes the lease; an auxiliary window resolves readiness to `{available: false, path: null}`, updates `page.path` to null and retains no page resources. Every terminal result clears its own pending diagnostic. A successful new registration resolves that owner's prior registration error. View creation or rendering failures report `ui_page_render_failed`, resolved only after a new current page actually mounts. Cleanup failures remain separate `ui_cleanup_failed` diagnostics.
 
 Native sidebar/router/header/composer discovery and private client exports are maintained in Core's [codex source modules](../../codex/README.md). They are embedded into the executable and require no separate adapter installation. Historical capability names and provider IDs remain compatibility aliases; installed legacy adapter records are preserved and superseded by Core ownership.
 
