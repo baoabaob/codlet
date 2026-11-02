@@ -1,8 +1,9 @@
-import { component, componentSource, desktopDocument, uniqueExport, currentElementAncestry, classicNavigationItem } from '../host-discovery.js';
+import { component, componentSource, desktopDocument, currentElementAncestry, classicNavigationItem } from '../host-discovery.js';
 import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import { reactFactories } from './react-factories.js';
 import {parseExpressionAt} from 'acorn';
 import {workspaceLexicalReferences,visitWorkspaceSource} from './workspace-source.js';
+import {resolveNativePageHeader} from './page-header.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export const COMPOSER_PROFILE = Object.freeze({ rootAttribute: 'data-codex-composer-root', scrollAreaAttribute: 'data-composer-utility-bar-scroll-area' });
@@ -146,7 +147,8 @@ export async function discoverNative({ load = url => import(url), signal, read =
   checkAssets();
   const primaryUrls = [...new Set([...initialSource.matchAll(/["'`]((?:\.\/)?app-primary-[A-Za-z0-9_-]+\.js)["'`]/g)].map(match => new URL(match[1], initialUrl).href))];
   if (primaryUrls.length > 1) throw fail('ui_host_drift', 'The native primary module is ambiguous');
-  const modules = [shared, initial, ...await Promise.all(primaryUrls.map(load))];
+  const primary = await Promise.all(primaryUrls.map(async url => ({ module: await load(url), source: await read(url) })));
+  const modules = [shared, initial, ...primary.map(record => record.module)];
   checkAssets();
   // Require mounted native components before calling even the React factories.
   const navigation = navigationComponents(modules);
@@ -156,8 +158,8 @@ export async function discoverNative({ load = url => import(url), signal, read =
   if (typeof React?.createElement !== 'function' || typeof React?.useState !== 'function' || typeof DOM?.flushSync !== 'function' ||
       typeof Client?.createRoot !== 'function' || React.version !== DOM.version)
     throw fail('ui_react_drift', 'Native React and DOM contracts do not match');
+  const header = resolveNativePageHeader([{ module: initial, source: initialSource }, ...primary], checkAssets);
   const appExports = modules.slice(1).flatMap(module => Object.values(module));
-  const header = uniqueExport(appExports, value => value && component(value.Header) && component(value.HeaderToolbar) && component(value.Root), 'page header', true);
   const resolveNavigation = () => nativeNavigation(React, modules);
   return { React, DOM, Client, ...navigation, resolveNavigation, NotificationBadge: notificationBadge(appExports), ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
     nativeDownloadGlyph:nativeDownloadGlyph(Object.values(shared)),

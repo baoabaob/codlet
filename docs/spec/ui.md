@@ -59,6 +59,8 @@ const page = await context.codex.navigation.page({
 
 `render` returns a complete ReactNode. Its optional toolbar is an owned DOM outlet, not a serializable control schema. Native route exit synchronously unmounts the React tree and disposes the page owner; callbacks describe activation/deactivation, not an independent floating overlay. On older API 2 runtimes without the factory helper, create an owner and call `ui.page` with the same options. Ordinary DOM mounting does not require a navigation provider.
 
+The page promise settles after Native confirms registration, before the user opens the page. During cold startup, its accepted lease carries the final registration result without repeating the RPC. A toolbar or route contract failure rejects the consumer's page promise and reports its diagnostic under that plugin. Owner retirement cancels the wait and removes the lease; an auxiliary window resolves with `path: null` and retains no page resources.
+
 Native sidebar/router/header/composer discovery and private client exports are maintained in Core's [codex source modules](../../codex/README.md). They are embedded into the executable and require no separate adapter installation. Historical capability names and provider IDs remain compatibility aliases; installed legacy adapter records are preserved and superseded by Core ownership.
 
 ## Explicit state transfer

@@ -387,6 +387,16 @@ export function deferredNavigation(context, load = loadNative) {
   let alive = true, navigation, failure, cancelWait, independentActions, native, rejectRetired;
   const controller=new AbortController();
   const pending = new Map(), pendingComposer = new Map();
+  const finishPage = (entry, result, error) => {
+    // The caller retains this exact, generation-owned lease while waiting for
+    // registration. Publish the terminal result before removing failed leases,
+    // so a cold-start failure reaches that caller rather than only the adapter.
+    entry.lease.dataset.codletPageRegistration = JSON.stringify(error ? {
+      api: 1, token: entry.args.token, status: 'failed',
+      error: { code: error.code || 'ui_page_registration_failed', message: String(error.message ?? error) },
+    } : { ...result, status: result.available === false ? 'unavailable' : 'ready' });
+    if (error || result.available === false) entry.lease.remove();
+  };
   const composer = () => {
     if (load !== loadNative) return null;
     if (independentActions) return independentActions;
@@ -435,10 +445,9 @@ export function deferredNavigation(context, load = loadNative) {
       if (!entry.lease.isConnected) continue;
       try {
         const result = navigation.register(entry.args, { caller: entry.caller });
-        if (result.available === false) entry.lease.remove();
+        finishPage(entry, result);
       } catch (error) {
-        entry.lease.remove();
-        context.reportDiagnostic?.({ code: error.code || 'ui_unavailable', message: error.message });
+        finishPage(entry, null, error);
       }
     }
     pending.clear();
@@ -458,7 +467,7 @@ export function deferredNavigation(context, load = loadNative) {
   const ready = Promise.race([initialization, new Promise((_, reject) => { rejectRetired = reject; })]);
   ready.catch(error => {
     failure = error;
-    for (const entry of pending.values()) entry.lease.remove();
+    for (const entry of pending.values()) finishPage(entry, null, error);
     pending.clear();
     for (const entry of pendingComposer.values()) entry.lease.remove();
     pendingComposer.clear();
@@ -475,7 +484,7 @@ export function deferredNavigation(context, load = loadNative) {
       for (const [id, entry] of pending) if (!entry.lease.isConnected) pending.delete(id);
       if (!pending.has(caller.pluginId) && pending.size >= 64) throw fail('resource_limit', 'Too many pending native pages');
       const previous = pending.get(caller.pluginId);
-      if (previous && previous.lease !== lease) previous.lease.remove();
+      if (previous && previous.lease !== lease) finishPage(previous, null, fail('ui_page_superseded', 'The page registration was replaced'));
       pending.set(caller.pluginId, { args: { ...args }, caller: { ...caller }, lease });
       return { api: 1, token: args.token, path: '/codlet/' + encodeURIComponent(caller.pluginId), pending: true };
     },
@@ -526,7 +535,7 @@ export function deferredNavigation(context, load = loadNative) {
     dispose() {
       if (!alive) return;
       alive = false; controller.abort();rejectRetired(fail('ui_retired', 'The UI adapter retired during initialization')); cancelWait?.();
-      for (const entry of pending.values()) entry.lease.remove();
+      for (const entry of pending.values()) finishPage(entry, null, fail('ui_retired', 'The page provider retired during registration'));
       pending.clear(); navigation?.dispose(); independentActions?.dispose();
       for (const entry of pendingComposer.values()) entry.lease.remove();
       pendingComposer.clear();

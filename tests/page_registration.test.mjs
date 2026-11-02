@@ -45,3 +45,65 @@ test('retirement while registration is pending releases the lease before its rep
   reply.resolve({api:1,token,path:'/pending'});await rejection;await tick();
   assert.equal(f.document.querySelector('[data-codlet-official-styles]'),null);
 });
+
+test('an accepted pending page waits for its own registration result without repeating the RPC',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());let token,settled=false;
+  f.overrides.set('register',args=>{token=args.token;return {api:1,token,path:'/pending',pending:true};});
+  const pending=f.context.ui.page({label:'Pending',render:()=>null}).then(page=>{settled=true;return page;});
+  await tick();assert.equal(settled,false);assert.equal(f.calls.filter(call=>call.method==='register').length,1);
+  const lease=f.document.querySelector('[data-codlet-page-lease]');
+  lease.dataset.codletPageRegistration=JSON.stringify({api:1,token,status:'ready',path:'/pending'});
+  const page=await pending;assert.equal(page.path,'/pending');assert.equal(f.calls.filter(call=>call.method==='register').length,1);
+  page.dispose();assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.deepEqual(f.errors,[]);
+});
+
+test('deferred registration reports the original failure to its consumer even when its lease is removed',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const baseline=f.cleanups.size;let token;
+  f.overrides.set('register',args=>{token=args.token;return {api:1,token,path:'/pending',pending:true};});
+  const pending=f.context.ui.page({label:'Unavailable toolbar',toolbar:true,render:()=>null});
+  const rejected=assert.rejects(pending,error=>error.code==='ui_build_drift'&&error.message==='Native toolbar changed');
+  await tick();const lease=f.document.querySelector('[data-codlet-page-lease]');
+  lease.dataset.codletPageRegistration=JSON.stringify({api:1,token,status:'failed',error:{code:'ui_build_drift',message:'Native toolbar changed'}});lease.remove();
+  await rejected;assert.equal(f.cleanups.size,baseline);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);
+  assert.equal(f.errors.length,1);assert.equal(f.errors[0].code,'ui_page_registration_failed');assert.equal(f.errors[0].message,'Native toolbar changed');
+});
+
+test('pending auxiliary and retired page owners settle without acquiring UI or retaining observers',async t=>{
+  for(const retire of [false,true]){
+    const f=uiFixture();t.after(()=>f.dispose());const priorCleanups=new Set(f.cleanups),baseline={observers:f.observers.size,cleanups:f.cleanups.size};let token;
+    f.context.ui.create=()=>assert.fail('pending or auxiliary page acquired UI');
+    f.overrides.set('register',args=>{token=args.token;return {api:1,token,path:'/pending',pending:true};});
+    const pending=f.context.ui.page({label:'Pending',render:()=>null});
+    const result=retire?assert.rejects(pending,/retired/):pending;
+    await tick();const lease=f.document.querySelector('[data-codlet-page-lease]');
+    if(retire){for(const cleanup of [...f.cleanups])if(!priorCleanups.has(cleanup))cleanup();}
+    else{lease.dataset.codletPageRegistration=JSON.stringify({api:1,token,status:'unavailable',path:null,available:false});lease.remove();}
+    const page=await result;if(!retire)assert.equal(page.path,null);
+    assert.equal(f.observers.size,baseline.observers);assert.equal(f.cleanups.size,baseline.cleanups);assert.deepEqual(f.errors,[]);
+  }
+});
+
+test('a ready receipt cannot revive a removed or replaced generation lease',async t=>{
+  for(const pending of [false,true])for(const replaceOwner of [false,true]){
+    const f=uiFixture();t.after(()=>f.dispose());
+    f.overrides.set('register',args=>{
+      const lease=f.document.querySelector('[data-codlet-page-lease]'),reply={api:1,token:args.token,path:'/ready'};
+      if(pending)lease.dataset.codletPageRegistration=JSON.stringify({...reply,status:'ready'});
+      if(replaceOwner)lease.dataset.codletGeneration='2';else lease.remove();
+      return {...reply,...(pending?{pending:true}:{})};
+    });
+    await assert.rejects(f.context.ui.page({label:'Stale ready',render:()=>null}),error=>error.code===(replaceOwner?'invalid_owner':'ui_retired'));
+    assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.errors.length,1);
+  }
+});
+
+test('an explicit successful retry clears only the page-registration diagnostic for that live generation',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const failure=Object.assign(Error('Native toolbar changed'),{code:'ui_build_drift'});
+  f.overrides.set('register',()=>{throw failure;});
+  await assert.rejects(f.context.ui.page({label:'First attempt',render:()=>null}),error=>error===failure);
+  assert.equal(f.errors.length,1);assert.equal(f.errors[0].code,'ui_page_registration_failed');
+  f.overrides.set('register',args=>({api:1,token:args.token,path:'/ready'}));
+  const page=await f.context.ui.page({label:'Retry',render:()=>null});
+  assert.equal(f.errors.length,2);assert.equal(f.errors[1].code,'ui_page_registration_failed');assert.equal(f.errors[1].resolved,true);
+  page.dispose();
+});

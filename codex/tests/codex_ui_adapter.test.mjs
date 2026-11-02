@@ -344,12 +344,12 @@ test('the reviewed avatar window declines pages without errors, observers or rou
   assert.equal(f.shell.routes.length,original.length);original.forEach((route,index)=>assert.equal(f.shell.routes[index],route));assert.equal(f.errors.length,0);page.dispose();ui.dispose();
 });
 
-test('cold startup accepts a page lease without holding its activation RPC and mounts once the native shell is ready',async t=>{
+test('cold startup releases its RPC but settles page activation only when the native registration is ready',async t=>{
   const f=fixture(t);f.navigation.dispose();const loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);
   t.after(()=>bridge.dispose());f.overrides.set('register',args=>bridge.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
-  const ui=f.context.ui.create(),page=await ui.page({label:'Codlet',render:()=>null});
-  assert.equal(page.path,'/codlet/codlet-gui');assert.equal(f.control('Codlet'),undefined);assert.ok(f.document.querySelector('[data-codlet-page-lease]'));
-  loading.resolve(f.native);await bridge.ready;await tick();assert.ok(f.control('Codlet'));f.control('Codlet').click();await tick();assert.ok(f.document.querySelector('[data-codlet-page-host]'));
+  const ui=f.context.ui.create();let settled=false;const pending=ui.page({label:'Codlet',render:()=>null}).then(page=>{settled=true;return page;});
+  await tick();assert.equal(settled,false);assert.equal(f.control('Codlet'),undefined);assert.ok(f.document.querySelector('[data-codlet-page-lease]'));
+  loading.resolve(f.native);await bridge.ready;const page=await pending;assert.equal(page.path,'/codlet/codlet-gui');await tick();assert.ok(f.control('Codlet'));f.control('Codlet').click();await tick();assert.ok(f.document.querySelector('[data-codlet-page-host]'));
   assert.equal(f.errors.length,0);ui.dispose();await tick();assert.equal(f.control('Codlet'),undefined);bridge.dispose();await tick();
 });
 
@@ -379,8 +379,20 @@ test('provider retirement rejects readiness while an already-started Native modu
 test('deferred registration retires with its page or provider and never adds a late route',async t=>{
   const f=fixture(t);f.navigation.dispose();const count=f.shell.routes.length,loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);
   f.overrides.set('register',args=>bridge.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
-  const ui=f.context.ui.create();await ui.page({label:'Codlet',render:()=>null});ui.dispose();bridge.dispose();loading.resolve(f.native);
+  const ui=f.context.ui.create(),page=ui.page({label:'Codlet',render:()=>null}),rejected=assert.rejects(page,/retired/);await tick();ui.dispose();bridge.dispose();loading.resolve(f.native);await rejected;
   await assert.rejects(bridge.ready,{code:'ui_retired'});await tick();assert.equal(f.shell.routes.length,count);assert.equal(f.control('Codlet'),undefined);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);
+});
+
+test('a cold-start toolbar failure settles only its consumer and preserves unrelated registered pages',async t=>{
+  const f=fixture(t);f.navigation.dispose();const original=f.shell.routes.length,loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);
+  t.after(()=>bridge.dispose());f.overrides.set('register',args=>bridge.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
+  const ui=f.context.ui.create(),pending=ui.page({label:'Toolbar page',toolbar:true,render:()=>null}),rejected=assert.rejects(pending,{code:'ui_build_drift'});
+  await tick();const other=f.document.createElement('span');Object.assign(other.dataset,{codletPageLease:'other-page-token-123456',codletPageOwner:'other',codletGeneration:'1'});f.document.body.append(other);
+  bridge.register({label:'Other page',icon:'Cube',token:'other-page-token-123456'},{caller:{pluginId:'other',generation:1}});
+  loading.resolve({...f.native,Header:undefined});await bridge.ready;await rejected;await tick();
+  assert.equal(f.document.querySelector('[data-codlet-page-owner="codlet-gui"]'),null);assert.ok(f.control('Other page'));assert.equal(f.shell.routes.length,original+1);
+  assert.equal(f.errors.length,1);assert.equal(f.errors[0].code,'ui_page_registration_failed');assert.match(f.errors[0].message,/toolbar is unavailable/);
+  other.remove();ui.dispose();await tick();
 });
 test('a deferred avatar page releases its UI resources when the native router declines it',async t=>{
   const f=fixture(t);f.navigation.dispose();f.shell.navigator.push('/avatar-overlay');await tick();

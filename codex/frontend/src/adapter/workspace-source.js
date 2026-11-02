@@ -35,7 +35,7 @@ function functionIndex(stream, functions) {
     }
     if (label === ')' && parameters.has(parens)) { body = parameters.get(parens); parameters.delete(parens); }
     if (label === '}' && bodies.has(braces)) { bodies.get(braces).end = token.end; bodies.delete(braces); }
-    if (label === 'function') { header = { start: token.start, end: null }; functions.push(header); }
+    if (label === 'function') { header = { start: token.start, end: null, topLevel: braces === 0 && parens === 0 }; functions.push(header); }
     if (label === '{' || label === '${') braces++;
     if (label === '}') braces--;
     if (label === '(') parens++;
@@ -107,7 +107,7 @@ export function workspaceModuleSyntax(source) {
   syntaxCache.set(source, result); return result;
 }
 
-export function workspaceSourceFunctions(source, marker, {identifier=false}={}) {
+export function workspaceSourceFunctions(source, marker, {identifier=false,topLevel=false}={}) {
   if (!marker || !source.includes(marker)) return [];
   const syntax = workspaceModuleSyntax(source), found = new Map();
   const positions = [];
@@ -115,7 +115,8 @@ export function workspaceSourceFunctions(source, marker, {identifier=false}={}) 
     if(identifier&&(/[A-Za-z0-9_$]/.test(source[at-1]??'')||/[A-Za-z0-9_$]/.test(source[at+marker.length]??'')))continue;
     positions.push(at);
   }
-  for (const { start, end } of syntax.functions) {
+  for (const { start, end, topLevel: moduleLevel } of syntax.functions) {
+    if (topLevel && !moduleLevel) continue;
     let low = 0, high = positions.length;
     while (low < high) { const middle = (low + high) >>> 1; if (positions[middle] < start) low = middle + 1; else high = middle; }
     if (end === null || low === positions.length || positions[low] >= end) continue;
