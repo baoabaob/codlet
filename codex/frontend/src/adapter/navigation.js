@@ -283,7 +283,7 @@ export function createNavigation(context, native, host, withComposer = true) {
   function register(args, invocation) {
     check();
     const { caller, lease } = pageOwner(args, invocation);
-    if(args.toolbar && (!Header || !HeaderToolbar))throw fail('ui_build_drift','The reviewed native page toolbar is unavailable');
+    if(args.toolbar && (!Header || !HeaderToolbar))throw native.pageHeaderError??fail('ui_build_drift','The reviewed native page toolbar is unavailable');
     const existing = entries.get(caller.pluginId);
     if (existing) {
       if (existing.token === args.token && existing.lease === lease) return existing.description;

@@ -1,9 +1,10 @@
 import { component, componentSource, desktopDocument, currentElementAncestry, classicNavigationItem } from '../host-discovery.js';
-import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
+import {resolveLoadedAsset,captureResolvedAssets,resolveNativeRootModule} from '../host-assets.js';
 import { reactFactories } from './react-factories.js';
 import {parseExpressionAt} from 'acorn';
 import {workspaceLexicalReferences,visitWorkspaceSource} from './workspace-source.js';
 import {resolveNativePageHeader} from './page-header.js';
+import {workspaceRuntimeReferences} from './workspace-discovery.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export const COMPOSER_PROFILE = Object.freeze({ rootAttribute: 'data-codex-composer-root', scrollAreaAttribute: 'data-composer-utility-bar-scroll-area' });
@@ -133,6 +134,23 @@ export function newTaskHook(initial) {
   });
   return hooks.length === 1 ? hooks[0] : undefined;
 }
+export async function loadNativePageHeader(records,{load,read,signal,check=()=>{}}){
+  let checkRoot;
+  const owned=()=>{signal?.throwIfAborted();check();checkRoot?.();};
+  owned();const existing=resolveNativePageHeader(records,owned);
+  if(existing)return existing;
+  // Modern Native loads primary beside initial through the exact application
+  // initializer whose result it renders. Reuse that owner-bound runtime proof.
+  const root=await resolveNativeRootModule({read,signal});checkRoot=root.check;owned();
+  const runtime=await workspaceRuntimeReferences(read,undefined,root);owned();
+  const urls=runtime.imports.filter(url=>/^app:\/\/-\/assets\/app-primary-[A-Za-z0-9_-]+\.js$/.test(url));
+  if(urls.length!==1)throw fail('ui_build_drift','A unique Native primary module is required for the page toolbar');
+  const source=await read(urls[0]);owned();
+  const module=await load(urls[0]);owned();
+  const header=resolveNativePageHeader([...records,{module,source}],owned);
+  if(!header)throw fail('ui_build_drift','The Native application module does not expose a page toolbar');
+  return header;
+}
 export async function discoverNative({ load = url => import(url), signal, read = async url => {
   const response = await fetch(url, { credentials: 'omit',signal });
   if (!response.ok || response.url !== url) throw fail('ui_asset_unavailable', 'Unable to read the loaded native shared module');
@@ -158,10 +176,16 @@ export async function discoverNative({ load = url => import(url), signal, read =
   if (typeof React?.createElement !== 'function' || typeof React?.useState !== 'function' || typeof DOM?.flushSync !== 'function' ||
       typeof Client?.createRoot !== 'function' || React.version !== DOM.version)
     throw fail('ui_react_drift', 'Native React and DOM contracts do not match');
-  const header = resolveNativePageHeader([{ module: initial, source: initialSource }, ...primary], checkAssets);
+  let header,pageHeaderError;
+  try{header=await loadNativePageHeader([{module:initial,source:initialSource},...primary],{load,read,signal,check:checkAssets});}
+  catch(error){
+    if(signal?.aborted||error?.code==='desktop_asset_owner_replaced')throw error;
+    checkAssets();pageHeaderError=error;
+  }
+  checkAssets();
   const appExports = modules.slice(1).flatMap(module => Object.values(module));
   const resolveNavigation = () => nativeNavigation(React, modules);
-  return { React, DOM, Client, ...navigation, resolveNavigation, NotificationBadge: notificationBadge(appExports), ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
+  return { React, DOM, Client, ...navigation, resolveNavigation, NotificationBadge: notificationBadge(appExports), ...(navigation.RailTooltip ? { RailTooltip: adaptRailTooltip(React, navigation.RailTooltip) } : {}), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,pageHeaderError,
     nativeDownloadGlyph:nativeDownloadGlyph(Object.values(shared)),
     composerActionProfile: COMPOSER_PROFILE, toolbarInset: 'page', newTaskOptions: { codexAppMode: 'codex' },
     useStartNewConversation: newTaskHook(appExports), compatibility: 'structural' };
