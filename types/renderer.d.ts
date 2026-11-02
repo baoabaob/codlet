@@ -60,8 +60,10 @@ export interface RendererContext {
    * Shares Core's existing cleanup deadline; forced retirement aborts signal and
    * reports incomplete cleanup. Callbacks must check signal before later writes. */
   onCleanup(listener: (cleanup: Readonly<{ signal: AbortSignal }>) => void | RendererReloadRequired | Promise<void | RendererReloadRequired>): () => void;
-  /** Bounded, source-attributed observations for runtime inspection/doctor; no authority change. */
-  reportDiagnostic(diagnostic: { code: string; message: string; level?: 'info' | 'error' }): void;
+  /** At most 32 source-attributed observations per generation; no authority change.
+   * Errors remain current until resolved:true clears that code or the owner retires.
+   * An explicit resolution of an existing code is allowed after that budget. */
+  reportDiagnostic(diagnostic: { code: string; message: string; level?: 'info' | 'error'; resolved?: boolean }): void;
 }
 /** A plugin that cannot undo a page patch must report this on unload. */
 export interface RendererReloadRequired { readonly reloadRequired: true; readonly reason: string }

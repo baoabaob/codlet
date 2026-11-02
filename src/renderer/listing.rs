@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use crate::catalog::{PluginCatalog, PluginSource};
 use crate::plugin_execution::{ExecutionState, PluginExecutionObservation};
 use crate::plugins::{LoadedPlugin, PluginRegistry};
+use crate::runtime_status::TargetStatus;
 
 pub(super) fn plugin_list(
     catalog: &PluginCatalog,
@@ -150,10 +151,38 @@ pub(super) fn plugin_list(
     json!({"plugins":rows,"runtimeVersion":env!("CARGO_PKG_VERSION"),"coreProviders":core,"legacyAdapterRegistrations":catalog.legacy_adapter_registrations(registry)})
 }
 
+/// Renderer health belongs to the requesting document. A Host-only list has no
+/// document selection and must not borrow a convenient target's observations.
+pub(super) fn add_renderer_target(list: &mut Value, target: &TargetStatus) {
+    let Some(rows) = list["plugins"].as_array_mut() else {
+        return;
+    };
+    for row in rows {
+        let Some(observation) = target.plugins.iter().find(|plugin| {
+            row["id"].as_str() == Some(plugin.id.as_str())
+                && row["generation"].as_u64() == Some(plugin.generation)
+        }) else {
+            continue;
+        };
+        row["renderer"] = json!({
+            "targetId": target.target_id,
+            "generation": observation.generation,
+            "lifecycle": observation.lifecycle,
+            "contextPresent": observation.context_present,
+            "activationConfirmed": observation.activation_confirmed,
+            "active": observation.active,
+            "error": observation.error,
+            "diagnostics": observation.diagnostics,
+            "diagnosticsTruncated": observation.diagnostics_truncated,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plugins::{LocalPluginRegistration, Permission, bundled_plugins};
+    use crate::runtime_status::{PluginDiagnostic, PluginError, PluginLifecycle, PluginStatus};
     use tempfile::tempdir;
 
     fn row<'a>(list: &'a Value, id: &str) -> &'a Value {
@@ -163,6 +192,87 @@ mod tests {
             .iter()
             .find(|plugin| plugin["id"] == id)
             .expect("plugin should be listed")
+    }
+
+    #[test]
+    fn renderer_health_is_scoped_to_the_current_target_and_generation() {
+        let mut list = json!({"plugins":[
+            {"id":"example","generation":2,"active":true},
+            {"id":"peer","generation":3,"active":true},
+            {"id":"host-only","generation":1,"active":true}
+        ]});
+        let target = TargetStatus {
+            target_id: "current-document".into(),
+            session_id: "session".into(),
+            session_live: true,
+            plugins: vec![
+                PluginStatus {
+                    id: "example".into(),
+                    version: "2".into(),
+                    generation: 2,
+                    lifecycle: PluginLifecycle::Active,
+                    context_present: true,
+                    activation_confirmed: true,
+                    active: true,
+                    error: None,
+                    diagnostics: vec![PluginDiagnostic {
+                        code: "page_unavailable".into(),
+                        message: "Native toolbar unavailable".into(),
+                        level: "error".into(),
+                    }],
+                    diagnostics_truncated: false,
+                },
+                PluginStatus {
+                    id: "peer".into(),
+                    version: "1".into(),
+                    generation: 1,
+                    lifecycle: PluginLifecycle::Failed,
+                    context_present: false,
+                    activation_confirmed: false,
+                    active: false,
+                    error: Some(PluginError {
+                        code: "renderer_activation_failed".into(),
+                        message: "old generation".into(),
+                    }),
+                    diagnostics: Vec::new(),
+                    diagnostics_truncated: false,
+                },
+            ],
+        };
+        add_renderer_target(&mut list, &target);
+        let current = row(&list, "example");
+        assert_eq!(current["renderer"]["targetId"], "current-document");
+        assert_eq!(current["renderer"]["generation"], 2);
+        assert_eq!(current["renderer"]["lifecycle"], "active");
+        assert_eq!(
+            current["renderer"]["diagnostics"][0]["code"],
+            "page_unavailable"
+        );
+        assert_eq!(
+            current["active"], true,
+            "a nonfatal diagnostic does not deactivate its owner"
+        );
+        assert!(row(&list, "peer").get("renderer").is_none());
+        assert!(row(&list, "host-only").get("renderer").is_none());
+
+        let mut failed_target = target.clone();
+        failed_target.target_id = "other-document".into();
+        let failed = &mut failed_target.plugins[0];
+        failed.lifecycle = PluginLifecycle::Failed;
+        failed.active = false;
+        failed.context_present = false;
+        failed.activation_confirmed = false;
+        failed.error = Some(PluginError {
+            code: "renderer_activation_failed".into(),
+            message: "Activation rejected".into(),
+        });
+        let mut other = json!({"plugins":[{"id":"example","generation":2,"active":false}]});
+        add_renderer_target(&mut other, &failed_target);
+        assert_eq!(
+            row(&other, "example")["renderer"]["error"]["message"],
+            "Activation rejected"
+        );
+        assert!(row(&list, "example")["renderer"]["error"].is_null());
     }
 
     #[test]

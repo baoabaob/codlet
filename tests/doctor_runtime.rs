@@ -82,6 +82,9 @@ fn inspection() -> RuntimeInspection {
                     context_present: true,
                     activation_confirmed: true,
                     active: true,
+                    error: None,
+                    diagnostics: Vec::new(),
+                    diagnostics_truncated: false,
                 }],
             }],
             recent_events: vec![StatusEvent {

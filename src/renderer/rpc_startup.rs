@@ -58,6 +58,7 @@ impl RendererRuntime {
                             document_epoch: 1,
                             recovery_pending: false,
                             plugins: Vec::with_capacity(self.plugins.len()),
+                            failed_plugins: BTreeMap::new(),
                             events: session.subscribe_events(),
                             skill_bootstrap: None,
                         },
@@ -143,6 +144,8 @@ impl RendererRuntime {
         authorization: TargetAuthorizations,
     ) -> Result<(), RendererError> {
         let id = plugin.manifest.id.clone();
+        let version = plugin.manifest.version.clone();
+        let generation = plugin.generation;
         let mut missing = None;
         if let Some((principal, leases)) = authorization.get(&id) {
             for lease in leases.values() {
@@ -180,13 +183,47 @@ impl RendererRuntime {
             {
                 return Err(error);
             }
+            let observed = self.sessions.get(target).and_then(|session| {
+                session
+                    .plugins
+                    .iter()
+                    .find(|active| active.id == id && active.generation == generation)
+                    .map(|active| {
+                        active.status(session.session.is_live(), session.recovery_pending)
+                    })
+            });
             let _ = self.deactivate_plugin(target, &id);
+            if let Some(session) = self.sessions.get_mut(target) {
+                session.failed_plugins.insert(
+                    id.clone(),
+                    PluginStatus {
+                        id: id.clone(),
+                        version,
+                        generation,
+                        lifecycle: RendererPluginState::Failed,
+                        context_present: false,
+                        activation_confirmed: false,
+                        active: false,
+                        error: Some(PluginError {
+                            code: "renderer_activation_failed".into(),
+                            message: status_text(&error.to_string()),
+                        }),
+                        diagnostics_truncated: observed
+                            .as_ref()
+                            .is_some_and(|status| status.diagnostics_truncated),
+                        diagnostics: observed
+                            .map(|status| status.diagnostics)
+                            .unwrap_or_default(),
+                    },
+                );
+            }
             self.record_status_event(target, "plugin_activation_failed", &error.to_string());
             self.diagnostics.push(RendererDiagnostic {
                 target_id: target.into(),
                 plugin_id: id,
                 message: error.to_string(),
             });
+            self.publish_status();
         }
         Ok(())
     }

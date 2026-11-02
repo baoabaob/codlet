@@ -428,6 +428,11 @@ impl RendererRuntime {
         target_ids.sort();
         let mut failures = Vec::new();
         for target_id in target_ids {
+            if let Some(session) = self.sessions.get_mut(&target_id) {
+                session
+                    .failed_plugins
+                    .retain(|id, _| !affected.contains(id));
+            }
             let plugins: Vec<_> = self
                 .sessions
                 .get(&target_id)

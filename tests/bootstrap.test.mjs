@@ -189,6 +189,27 @@ test('renderer diagnostics retain their binding principal and are bounded for ea
     await f.runtime.deactivate('dev.example', 1);
 });
 
+test('diagnostic recovery clears only an owned code and remains possible after the emission budget', async () => {
+    const f = rpcFixture(); let ctx;
+    await f.runtime.activate(f.metadata, { activate(value) { ctx = value; }, deactivate() {} });
+    ctx.reportDiagnostic({ code: 'page_failed', message: 'Native toolbar unavailable' });
+    for (let i = 1; i < 32; i++) ctx.reportDiagnostic({ code: 'progress', message: 'bounded', level: 'info' });
+    assert.throws(() => ctx.reportDiagnostic({ code: 'extra', message: 'overflow' }), { code: 'diagnostic_limit' });
+    ctx.reportDiagnostic({ code: 'page_failed', message: 'The page is available', resolved: true });
+    assert.deepEqual(f.requests.at(-1), { v: 1, type: 'diagnostic', pluginId: 'dev.example', generation: 1, code: 'page_failed', message: 'The page is available', level: 'error', resolved: true });
+    const count = f.requests.length;
+    ctx.reportDiagnostic({ code: 'page_failed', message: 'Already resolved', resolved: true });
+    ctx.reportDiagnostic({ code: 'unowned', message: 'No receipt', resolved: true });
+    assert.equal(f.requests.length, count, 'unknown and repeated recovery receipts do not send traffic');
+    assert.throws(() => ctx.reportDiagnostic({ code: 'progress', message: 'invalid', resolved: 'true' }), { code: 'invalid_diagnostic' });
+    await f.runtime.deactivate('dev.example', 1);
+    assert.throws(() => ctx.reportDiagnostic({ code: 'progress', message: 'late', resolved: true }), { code: 'plugin_deactivated' });
+    await f.runtime.activate(metadata(2, { binding: 'test_binding' }), { activate(value) { ctx = value; }, deactivate() {} });
+    ctx.reportDiagnostic({ code: 'page_failed', message: 'New generation' });
+    assert.equal(f.requests.at(-1).generation, 2);
+    await f.runtime.deactivate('dev.example', 2);
+});
+
 test('binding failure and plugin retirement clear RPC timers', async () => {
     const timers = controlledTimers();
     const fixture = rpcFixture(timers);

@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,10 @@ use crate::cdp::{
 };
 use crate::plugin_execution::PluginExecutionObservation;
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
-use crate::runtime_status::{PluginLifecycle as RendererPluginState, StatusEvent, StatusPublisher};
+use crate::runtime_status::{
+    PluginDiagnostic, PluginError, PluginLifecycle as RendererPluginState, PluginStatus,
+    StatusEvent, StatusPublisher, TargetStatus,
+};
 
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_RENDERER_RPC_PAYLOAD_BYTES: usize = 1024 * 1024;
@@ -145,6 +148,7 @@ struct RendererSession {
     document_epoch: u64,
     recovery_pending: bool,
     plugins: Vec<ActivePlugin>,
+    failed_plugins: BTreeMap<String, PluginStatus>,
     events: CdpEventStream,
     skill_bootstrap: Option<String>,
 }
@@ -164,6 +168,7 @@ struct ActivePlugin {
     leases: BTreeMap<CapabilityDescriptor, CapabilityLease>,
     last_request_id: Cell<u64>,
     diagnostic_count: Cell<u32>,
+    diagnostics: RefCell<BTreeMap<String, PluginDiagnostic>>,
     bootstrap_identifiers: Vec<String>,
     state: RendererPluginState,
 }
@@ -186,6 +191,8 @@ struct RendererReportedDiagnostic {
     code: String,
     message: String,
     level: String,
+    #[serde(default)]
+    resolved: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -267,6 +274,7 @@ struct HostEndpointContext<'a> {
     plugins: &'a [LoadedPlugin],
     external_observations: &'a [PluginExecutionObservation],
     active_plugin_ids: BTreeSet<String>,
+    renderer_target: Option<TargetStatus>,
     manage_service: Option<&'a crate::runtime_manage::RuntimeManageService>,
 }
 
@@ -428,6 +436,7 @@ impl RendererRuntime {
             document_epoch,
             recovery_pending: false,
             plugins: Vec::with_capacity(self.plugins.len()),
+            failed_plugins: BTreeMap::new(),
             events: session.subscribe_events(),
             skill_bootstrap: None,
         };
@@ -493,6 +502,11 @@ impl RendererRuntime {
         let document_epoch = self.sessions[target_id].document_epoch;
 
         for plugin in catalog {
+            self.sessions
+                .get_mut(target_id)
+                .expect("installing target exists")
+                .failed_plugins
+                .remove(&plugin.manifest.id);
             self.require_native_dependencies_ready(&plugin, &authorizations)?;
             let world = plugin
                 .manifest
@@ -569,6 +583,7 @@ impl RendererRuntime {
                     leases,
                     last_request_id: Cell::new(0),
                     diagnostic_count: Cell::new(0),
+                    diagnostics: RefCell::new(BTreeMap::new()),
                     bootstrap_identifiers,
                     state: RendererPluginState::Activating,
                 });
@@ -1136,6 +1151,7 @@ impl RendererRuntime {
                                 document_epoch: next_epoch,
                                 recovery_pending: false,
                                 plugins: Vec::new(),
+                                failed_plugins: BTreeMap::new(),
                                 skill_bootstrap: None,
                             },
                         );
@@ -1277,9 +1293,12 @@ impl RendererRuntime {
                 let owner = self.sessions.get_mut(target_id).expect("target exists");
                 owner.main_frame_id = Some(id.to_owned());
                 owner.recovery_pending = true;
+                owner.failed_plugins.clear();
                 for plugin in &mut owner.plugins {
                     plugin.context_id = None;
                     plugin.activation_confirmed = false;
+                    plugin.diagnostics.get_mut().clear();
+                    plugin.diagnostic_count.set(0);
                 }
                 Ok(false)
             }
@@ -1332,6 +1351,8 @@ impl RendererRuntime {
                 {
                     if plugin.context_id != Some(context_id) {
                         plugin.activation_confirmed = false;
+                        plugin.diagnostics.get_mut().clear();
+                        plugin.diagnostic_count.set(0);
                     }
                     plugin.context_id = Some(context_id);
                 }
@@ -1355,19 +1376,23 @@ impl RendererRuntime {
                     if plugin.context_id == Some(context_id) {
                         plugin.context_id = None;
                         plugin.activation_confirmed = false;
+                        plugin.diagnostics.get_mut().clear();
+                        plugin.diagnostic_count.set(0);
                     }
                 }
                 Ok(false)
             }
             "Runtime.executionContextsCleared" => {
-                for plugin in &mut self
+                let owner = self
                     .sessions
                     .get_mut(target_id)
-                    .expect("renderer target disappeared while handling its event")
-                    .plugins
-                {
+                    .expect("renderer target disappeared while handling its event");
+                owner.failed_plugins.clear();
+                for plugin in &mut owner.plugins {
                     plugin.context_id = None;
                     plugin.activation_confirmed = false;
+                    plugin.diagnostics.get_mut().clear();
+                    plugin.diagnostic_count.set(0);
                 }
                 Ok(false)
             }
@@ -1579,11 +1604,18 @@ impl RendererRuntime {
                         .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
                     && diagnostic.message.len() <= 4096
                     && matches!(diagnostic.level.as_str(), "info" | "error")
-                    && consumer.diagnostic_count.get() < 32
+                    && if diagnostic.resolved {
+                        consumer.diagnostics.borrow().contains_key(&diagnostic.code)
+                    } else {
+                        consumer.diagnostic_count.get() < 32
+                    }
                 {
-                    consumer
-                        .diagnostic_count
-                        .set(consumer.diagnostic_count.get() + 1);
+                    if !diagnostic.resolved {
+                        consumer
+                            .diagnostic_count
+                            .set(consumer.diagnostic_count.get() + 1);
+                    }
+                    consumer.apply_diagnostic(&diagnostic);
                     let plugin_id = consumer.id.clone();
                     let detail = format!(
                         "{} generation {} reported {}: {}",
@@ -1591,14 +1623,16 @@ impl RendererRuntime {
                     );
                     self.record_status_event(
                         target_id,
-                        if diagnostic.level == "error" {
+                        if diagnostic.resolved {
+                            "plugin_diagnostic_resolved"
+                        } else if diagnostic.level == "error" {
                             "plugin_reported_error"
                         } else {
                             "plugin_reported_info"
                         },
                         &detail,
                     );
-                    if diagnostic.level == "error" {
+                    if diagnostic.level == "error" && !diagnostic.resolved {
                         self.diagnostics.push(RendererDiagnostic {
                             target_id: target_id.to_owned(),
                             plugin_id,
@@ -1728,12 +1762,12 @@ impl RendererRuntime {
                         Err(error) => Err(error),
                     }
                 } else if provider_id == BUILTIN_HOST_PROVIDER_ID {
-                    let active_plugin_ids = self
-                        .sessions
-                        .get(target_id)
+                    let renderer_target = self.target_status(target_id);
+                    let active_plugin_ids = renderer_target
+                        .as_ref()
                         .into_iter()
-                        .flat_map(|session| &session.plugins)
-                        .filter(|plugin| plugin.state == RendererPluginState::Active)
+                        .flat_map(|target| &target.plugins)
+                        .filter(|plugin| plugin.active)
                         .map(|plugin| plugin.id.clone())
                         .collect();
                     let host_outcome = if self.management_active
@@ -1752,6 +1786,7 @@ impl RendererRuntime {
                                 plugins: &self.plugins,
                                 external_observations: &self.external_observations,
                                 active_plugin_ids,
+                                renderer_target,
                                 manage_service: self.manage_service.as_ref(),
                             },
                             &consumer.id,
@@ -1912,6 +1947,7 @@ impl RendererRuntime {
             .sessions
             .get_mut(target_id)
             .expect("live session exists");
+        session.failed_plugins.remove(plugin_id);
         let Some(plugin) = session
             .plugins
             .iter_mut()
@@ -2343,6 +2379,9 @@ fn invoke_builtin_host_endpoint(
                         &context.active_plugin_ids,
                         context.external_observations,
                     );
+                    if let Some(target) = &context.renderer_target {
+                        listing::add_renderer_target(&mut value, target);
+                    }
                     if let Some(service) = context.manage_service {
                         service.decorate_list(&mut value);
                     }

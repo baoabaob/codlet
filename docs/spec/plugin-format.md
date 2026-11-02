@@ -46,6 +46,29 @@ Manifest size is limited to 128 KiB; each main JS entry to 1 MiB. Inspection val
 
 Registration, startup and replacement use the [management](management.md) and [permission](permissions.md) contracts. `enabled` is intent; loaded snapshots and actually active instances are different facts. Combined activation is healthy only when both entries are active at the matching generation. Changing a live package's Host/Renderer entry shape requires restarting its Core session.
 
+Renderer activation is confirmed only by a completed lifecycle receipt. A failed
+optional entry remains visible as `failed` for that document and generation;
+disabling, replacing or retiring that owner removes its current failure. The
+management list's `renderer` field reports the requesting document's lifecycle,
+activation confirmation, error and current diagnostics separately from `enabled`
+and `active`.
+
+`context.reportDiagnostic({code, message, level})` records a source-attributed
+observation without changing capability authority or deactivating the plugin.
+The code is 1–64 ASCII letters, digits, `_`, `.` or `-`; messages contain at most
+4,096 UTF-8 bytes, and `level` is `info` or `error` (default). At most 32 observations
+may be emitted per renderer generation. An error remains current until the same
+owner reports `{code, message, resolved:true}` or retires. Informational messages
+do not resolve errors, including messages using the same code. Resolving an
+existing code remains allowed after the emission budget is reached; resolving an
+unknown code is a no-op. Current observations never cross documents or
+generations; the bounded event history retains earlier evidence separately.
+The status and management DTOs include up to eight current diagnostics per
+plugin, with errors first and messages bounded to 1,024 UTF-8 bytes. The renderer's
+`diagnosticsTruncated` flag (`diagnostics_truncated` in CLI status) identifies an
+incomplete diagnostic list or message; a false `active` or a current error still
+remains explicit.
+
 Optional local watch observes the manifest and declared main JS entries of already loaded local packages. It waits for stable observations and a quiet interval, then issues one dependency-closure replacement. It rechecks generation, source bytes, roots and complete trust before execution. Imported modules, assets and TypeScript inputs are outside this watch set; edit/build the declared output or reload explicitly. Changed trust/root selection pauses automatic replacement rather than broadening authority. Managed GitHub installations are immutable and are not watched.
 
 ## Publishable ZIP

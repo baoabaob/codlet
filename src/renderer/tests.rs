@@ -82,6 +82,20 @@ fn provider_bootstrap_failure_codes_preserve_the_original_diagnostic() {
 }
 
 #[test]
+fn lifecycle_receipts_require_completion_instead_of_accepting_pending_success() {
+    assert!(parse_lifecycle_result(json!({"result":{"value":{"ok":true}}})).is_ok());
+    assert!(
+        parse_lifecycle_result(json!({"result":{"value":{"ok":true,"pending":false}}})).is_ok()
+    );
+    let error =
+        parse_lifecycle_result(json!({"result":{"value":{"ok":true,"pending":true}}})).unwrap_err();
+    assert!(error.contains("pending"));
+    assert!(
+        parse_lifecycle_result(json!({"result":{"value":{"ok":true,"pending":"yes"}}})).is_err()
+    );
+}
+
+#[test]
 fn runtime_skill_shutdown_requires_a_confirmed_receipt_and_preserves_uncertainty() {
     for status in ["absent", "restored", "retired"] {
         assert!(runtime_skill_shutdown_status(&json!({"result":{"value":{"api":1,"status":status,"reason":null,"pendingNativeWrites":0}}})).unwrap().contains(status));
@@ -469,6 +483,7 @@ fn built_in_host_ping_is_strict_and_side_effect_free() {
             catalog: &catalog,
             plugins: &[],
             external_observations: &[],
+            renderer_target: None,
             manage_service: None,
             active_plugin_ids: BTreeSet::new(),
         },
@@ -490,6 +505,7 @@ fn built_in_host_ping_is_strict_and_side_effect_free() {
                 catalog: &catalog,
                 plugins: &[],
                 external_observations: &[],
+                renderer_target: None,
                 manage_service: None,
                 active_plugin_ids: BTreeSet::new(),
             },
@@ -530,6 +546,7 @@ fn runtime_manage_persists_before_scheduling_self_disable() {
             catalog: &catalog,
             plugins: &plugins,
             external_observations: &[],
+            renderer_target: None,
             manage_service: None,
             active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
         },
@@ -548,6 +565,7 @@ fn runtime_manage_persists_before_scheduling_self_disable() {
             catalog: &catalog,
             plugins: &plugins,
             external_observations: &[],
+            renderer_target: None,
             manage_service: None,
             active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
         },

@@ -1,5 +1,8 @@
 //! Bounded status and inspection sampled from the same foreground state.
-use super::{BUILTIN_HOST_PROVIDER_ID, RendererPluginState, RendererRuntime};
+use super::{
+    ActivePlugin, BUILTIN_HOST_PROVIDER_ID, RendererPluginState, RendererReportedDiagnostic,
+    RendererRuntime, RendererSession,
+};
 use crate::capabilities::CapabilityScopeInstance;
 use crate::runtime_inspection::{
     InspectedTarget, MAX_INSPECTION_CAPABILITIES, MAX_INSPECTION_CAPABILITIES_PER_PROVIDER,
@@ -7,10 +10,22 @@ use crate::runtime_inspection::{
     RendererInspection,
 };
 use crate::runtime_status::{
-    MAX_STATUS_PLUGINS_PER_TARGET, MAX_STATUS_TARGETS, PluginStatus, RendererStatus, TargetStatus,
+    MAX_STATUS_DIAGNOSTICS_PER_PLUGIN, MAX_STATUS_PLUGINS_PER_TARGET, MAX_STATUS_TARGETS,
+    PluginDiagnostic, PluginStatus, RendererStatus, TargetStatus,
 };
 
 impl RendererRuntime {
+    pub(super) fn target_status(&self, target_id: &str) -> Option<TargetStatus> {
+        let session = self.sessions.get(target_id)?;
+        let live = session.session.is_live();
+        Some(TargetStatus {
+            target_id: target_id.to_owned(),
+            session_id: session.session.session_id().to_owned(),
+            session_live: live,
+            plugins: session.plugin_statuses(live),
+        })
+    }
+
     pub fn status_snapshot(&self) -> RendererStatus {
         self.sample_runtime_observation().0
     }
@@ -27,33 +42,28 @@ impl RendererRuntime {
             // same read rather than taking two independent runtime snapshots.
             let session_live = session.session.is_live();
             let session_id = session.session.session_id();
-            truncated |= session.plugins.len() > MAX_STATUS_PLUGINS_PER_TARGET;
+            let observed = session.plugin_statuses(session_live);
+            truncated |= observed.len() > MAX_STATUS_PLUGINS_PER_TARGET;
             truncated |= target_id.len() > 1024 || session_id.len() > 1024;
-            truncated |= session
-                .plugins
-                .iter()
-                .any(|plugin| plugin.id.len() > 1024 || plugin.version.len() > 1024);
+            truncated |= observed.iter().any(|plugin| {
+                plugin.id.len() > 1024
+                    || plugin.version.len() > 1024
+                    || plugin.diagnostics_truncated
+            });
             let mut plugins = Vec::new();
             let mut inspected_plugins = Vec::new();
-            for plugin in session.plugins.iter().take(MAX_STATUS_PLUGINS_PER_TARGET) {
-                let status = PluginStatus {
-                    id: status_text(&plugin.id),
-                    version: status_text(&plugin.version),
-                    generation: plugin.generation,
-                    lifecycle: plugin.state,
-                    context_present: plugin.context_id.is_some(),
-                    activation_confirmed: plugin.activation_confirmed,
-                    active: session_live
-                        && !session.recovery_pending
-                        && plugin.context_id.is_some()
-                        && plugin.activation_confirmed
-                        && plugin.state == RendererPluginState::Active,
-                };
-                if plugin.id.len() <= MAX_INSPECTION_ID_BYTES
-                    && plugin.version.len() <= MAX_INSPECTION_ID_BYTES
+            for mut status in observed.into_iter().take(MAX_STATUS_PLUGINS_PER_TARGET) {
+                if status.id.len() <= MAX_INSPECTION_ID_BYTES
+                    && status.version.len() <= MAX_INSPECTION_ID_BYTES
                 {
                     inspected_plugins.push(status.clone());
+                } else {
+                    truncated = true;
                 }
+                // The legacy display is bounded; the inspection above keeps
+                // only complete identities that can safely be used as join keys.
+                status.id = status_text(&status.id);
+                status.version = status_text(&status.version);
                 plugins.push(status);
             }
             targets.push(TargetStatus {
@@ -150,10 +160,177 @@ impl RendererRuntime {
     }
 }
 
+impl RendererSession {
+    fn plugin_statuses(&self, live: bool) -> Vec<PluginStatus> {
+        let mut plugins: Vec<_> = self
+            .plugins
+            .iter()
+            .map(|plugin| plugin.status(live, self.recovery_pending))
+            .collect();
+        plugins.extend(
+            self.failed_plugins
+                .values()
+                .filter(|failed| !self.plugins.iter().any(|plugin| plugin.id == failed.id))
+                .cloned(),
+        );
+        plugins.sort_by(|a, b| a.id.cmp(&b.id));
+        plugins
+    }
+}
+
+impl ActivePlugin {
+    pub(super) fn status(&self, session_live: bool, recovery_pending: bool) -> PluginStatus {
+        let diagnostics = self.diagnostics.borrow();
+        let (diagnostics, diagnostics_truncated) = diagnostic_status(diagnostics.values());
+        PluginStatus {
+            id: self.id.clone(),
+            version: self.version.clone(),
+            generation: self.generation,
+            lifecycle: self.state,
+            context_present: self.context_id.is_some(),
+            activation_confirmed: self.activation_confirmed,
+            active: session_live
+                && !recovery_pending
+                && self.context_id.is_some()
+                && self.activation_confirmed
+                && self.state == RendererPluginState::Active,
+            error: None,
+            diagnostics,
+            diagnostics_truncated,
+        }
+    }
+
+    pub(super) fn apply_diagnostic(&self, diagnostic: &RendererReportedDiagnostic) {
+        let mut diagnostics = self.diagnostics.borrow_mut();
+        if diagnostic.resolved {
+            diagnostics.remove(&diagnostic.code);
+        } else if diagnostic.level == "error"
+            || diagnostics
+                .get(&diagnostic.code)
+                .is_none_or(|prior| prior.level != "error")
+        {
+            // Informational activity is not a recovery receipt. Keep an error
+            // until its owner explicitly resolves that exact code.
+            diagnostics.insert(
+                diagnostic.code.clone(),
+                crate::runtime_status::PluginDiagnostic {
+                    code: diagnostic.code.clone(),
+                    message: diagnostic.message.clone(),
+                    level: diagnostic.level.clone(),
+                },
+            );
+        }
+    }
+}
+
+fn diagnostic_status<'a>(
+    values: impl Iterator<Item = &'a PluginDiagnostic>,
+) -> (Vec<PluginDiagnostic>, bool) {
+    let mut values: Vec<_> = values.collect();
+    values.sort_by(|left, right| {
+        (left.level != "error", &left.code).cmp(&(right.level != "error", &right.code))
+    });
+    let mut truncated = values.len() > MAX_STATUS_DIAGNOSTICS_PER_PLUGIN;
+    let diagnostics = values
+        .into_iter()
+        .take(MAX_STATUS_DIAGNOSTICS_PER_PLUGIN)
+        .map(|value| {
+            truncated |= value.message.len() > 1024;
+            PluginDiagnostic {
+                code: value.code.clone(),
+                message: status_text(&value.message),
+                level: value.level.clone(),
+            }
+        })
+        .collect();
+    (diagnostics, truncated)
+}
+
 pub(super) fn status_text(text: &str) -> String {
     let mut end = text.len().min(1024);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     text[..end].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime_status::{
+        HostSnapshot, HostState, MAX_STATUS_RESPONSE_BYTES, StatusCode, StatusReport,
+    };
+
+    #[test]
+    fn diagnostic_exports_keep_errors_and_report_omissions_within_the_status_budget() {
+        let mut source: Vec<_> = (0..31)
+            .map(|index| PluginDiagnostic {
+                code: format!("info_{index:02}"),
+                message: "详".repeat(1365),
+                level: "info".into(),
+            })
+            .collect();
+        source.push(PluginDiagnostic {
+            code: "zz_current_error".into(),
+            message: "Native toolbar unavailable".into(),
+            level: "error".into(),
+        });
+        let (diagnostics, incomplete) = diagnostic_status(source.iter());
+        assert!(incomplete);
+        assert_eq!(diagnostics.len(), MAX_STATUS_DIAGNOSTICS_PER_PLUGIN);
+        assert_eq!(diagnostics[0].code, "zz_current_error");
+        assert_eq!(diagnostics[0].message, "Native toolbar unavailable");
+        assert!(diagnostics.iter().all(|item| item.message.len() <= 1024));
+        let plugin = PluginStatus {
+            id: "test.example".into(),
+            version: "1".into(),
+            generation: 1,
+            lifecycle: RendererPluginState::Active,
+            context_present: true,
+            activation_confirmed: true,
+            active: true,
+            error: None,
+            diagnostics,
+            diagnostics_truncated: incomplete,
+        };
+        let target = TargetStatus {
+            target_id: "target".into(),
+            session_id: "session".into(),
+            session_live: true,
+            plugins: vec![plugin; 3],
+        };
+        let report = StatusReport {
+            schema_version: crate::runtime_status::STATUS_SCHEMA_VERSION,
+            status: StatusCode::Running,
+            error: None,
+            snapshot: Some(HostSnapshot {
+                host_pid: 1,
+                codlet_version: "test".into(),
+                state: HostState::Ready,
+                sequence: 1,
+                sampled_at_unix_ms: 1,
+                codex: None,
+                termination: None,
+                renderer: RendererStatus {
+                    targets: vec![target; 2],
+                    recent_events: Vec::new(),
+                    truncated: true,
+                    isolated_worlds: None,
+                },
+            }),
+        };
+        let encoded = serde_json::to_vec(&report).unwrap();
+        assert!(
+            encoded.len() < MAX_STATUS_RESPONSE_BYTES / 2,
+            "three plugins in two documents must leave response headroom"
+        );
+        let restored: StatusReport = serde_json::from_slice(&encoded).unwrap();
+        assert!(restored.snapshot.unwrap().renderer.targets[0].plugins[0].diagnostics_truncated);
+        let (message_only, incomplete) = diagnostic_status(source[..1].iter());
+        assert!(
+            incomplete,
+            "truncated text is explicit even when no records were omitted"
+        );
+        assert_eq!(message_only.len(), 1);
+    }
 }

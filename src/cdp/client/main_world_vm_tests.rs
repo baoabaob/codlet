@@ -9,6 +9,296 @@ use crate::renderer::RendererRuntime;
 use serde_json::json;
 use tempfile::tempdir;
 
+fn health_runtime(
+    source: &str,
+) -> (
+    tempfile::TempDir,
+    RendererRuntime,
+    VmPeer,
+    TargetController,
+    Vec<crate::cdp::TargetSession>,
+) {
+    let directory = tempdir().unwrap();
+    let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    for plugin in bundled_plugins().unwrap() {
+        registry.set_enabled(&plugin.manifest.id, false).unwrap();
+    }
+    let manage = json!({"name":"codlet.runtime.manage","api":1,"scope":"target"});
+    let ping = json!({"name":"codlet.runtime.ping","api":1,"scope":"target"});
+    for (id, body, needs_management) in [
+        ("test.health", source, false),
+        (
+            "test.observer",
+            "module.exports={activate(ctx){globalThis.__healthRead=()=>ctx.rpc.request({name:'codlet.runtime.manage',api:1,scope:'target'},'list');},deactivate(){delete globalThis.__healthRead}};",
+            true,
+        ),
+    ] {
+        let path = directory.path().join(id);
+        std::fs::create_dir(&path).unwrap();
+        let mut grants = vec![Permission::UiMainWorld];
+        if needs_management {
+            grants.push(Permission::RuntimeManage);
+        }
+        std::fs::write(path.join("codlet.json"), json!({
+            "schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":"main"},
+            "permissions":grants,"requires":if needs_management { vec![manage.clone()] } else { vec![ping.clone()] }
+        }).to_string()).unwrap();
+        std::fs::write(path.join("renderer.js"), body).unwrap();
+        registry
+            .register_local(
+                id,
+                LocalPluginRegistration {
+                    path,
+                    grants,
+                    broker_policy: Default::default(),
+                },
+            )
+            .unwrap();
+        registry.set_enabled(id, true).unwrap();
+    }
+    registry.save().unwrap();
+    let renderer =
+        RendererRuntime::from_catalog(PluginCatalog::load(&registry).unwrap(), registry).unwrap();
+    let (peer, events) = VmPeer::start();
+    let (controller, sessions) =
+        TargetController::discover(peer.client.clone(), events, Duration::from_secs(5)).unwrap();
+    (directory, renderer, peer, controller, sessions)
+}
+
+fn read_health_list(renderer: &mut RendererRuntime, session: &crate::cdp::TargetSession) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut pending = session
+        .until(deadline)
+        .start_evaluate_in_context("__healthRead()", None)
+        .unwrap();
+    loop {
+        renderer.pump_bindings().unwrap();
+        if let Some(response) = pending.try_response().unwrap() {
+            let result = response.result.unwrap();
+            assert!(result.get("exceptionDetails").is_none(), "{result}");
+            return result.pointer("/result/value").unwrap().clone();
+        }
+        assert!(Instant::now() < deadline, "management list did not settle");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn health_row(list: &Value) -> &Value {
+    list["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "test.health")
+        .unwrap()
+}
+
+fn health_request(action: PluginControlAction) -> PluginControlRequest {
+    PluginControlRequest {
+        action,
+        plugin_id: "test.health".into(),
+        permission: None,
+        cascade: false,
+        remove_source: None,
+        local_import: None,
+    }
+}
+
+#[test]
+fn renderer_health_retains_activation_failure_until_the_affected_owner_is_replaced_or_disabled() {
+    let (_directory, mut renderer, mut peer, _controller, sessions) = health_runtime(
+        "module.exports={async activate(ctx){if(globalThis.__rejectHealth){for(let i=0;i<31;i++)ctx.reportDiagnostic({code:'note_'+i,message:'x'.repeat(4096),level:'info'});ctx.reportDiagnostic({code:'zzz_failure',message:'The page could not be registered'});await ctx.rpc.request({name:'codlet.runtime.ping',api:1,scope:'target'},'ping');throw Error('Native toolbar unavailable');}globalThis.__healthContext=ctx;},deactivate(){delete globalThis.__healthContext}};",
+    );
+    let current = sessions
+        .iter()
+        .find(|session| session.target_id() == "window-a")
+        .unwrap();
+    let peer_target = sessions
+        .iter()
+        .find(|session| session.target_id() == "window-b")
+        .unwrap();
+    current.evaluate("globalThis.__rejectHealth=true").unwrap();
+    assert!(
+        renderer
+            .attach_all(&sessions)
+            .iter()
+            .all(|(_, result)| result.is_ok())
+    );
+    let failed = read_health_list(&mut renderer, current);
+    assert_eq!(health_row(&failed)["enabled"], true);
+    assert_eq!(health_row(&failed)["active"], false);
+    assert_eq!(health_row(&failed)["renderer"]["targetId"], "window-a");
+    assert_eq!(health_row(&failed)["renderer"]["lifecycle"], "failed");
+    assert_eq!(
+        health_row(&failed)["renderer"]["diagnosticsTruncated"],
+        true
+    );
+    assert_eq!(
+        health_row(&failed)["renderer"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        crate::runtime_status::MAX_STATUS_DIAGNOSTICS_PER_PLUGIN
+    );
+    assert_eq!(
+        health_row(&failed)["renderer"]["diagnostics"][0]["code"],
+        "zzz_failure"
+    );
+    assert!(
+        health_row(&failed)["renderer"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|diagnostic| diagnostic["message"].as_str().unwrap().len() <= 1024)
+    );
+    assert!(
+        health_row(&failed)["renderer"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Native toolbar unavailable")
+    );
+    let healthy = read_health_list(&mut renderer, peer_target);
+    assert_eq!(health_row(&healthy)["active"], true);
+    assert!(health_row(&healthy)["renderer"]["error"].is_null());
+    assert_eq!(
+        renderer
+            .manage_plugin(health_request(PluginControlAction::Disable))
+            .unwrap()
+            .outcome,
+        PluginControlOutcome::Applied
+    );
+    let disabled = read_health_list(&mut renderer, current);
+    assert_eq!(health_row(&disabled)["enabled"], false);
+    assert!(health_row(&disabled).get("renderer").is_none());
+    assert!(renderer.status_snapshot().targets.iter().all(|target| {
+        target
+            .plugins
+            .iter()
+            .all(|plugin| plugin.id != "test.health")
+    }));
+    current.evaluate("globalThis.__rejectHealth=false").unwrap();
+    assert_eq!(
+        renderer
+            .manage_plugin(health_request(PluginControlAction::Enable))
+            .unwrap()
+            .outcome,
+        PluginControlOutcome::Applied
+    );
+    let recovered = read_health_list(&mut renderer, current);
+    assert_eq!(health_row(&recovered)["active"], true);
+    assert!(health_row(&recovered)["renderer"]["error"].is_null());
+    for session in &sessions {
+        renderer.deactivate_target(session.target_id()).unwrap();
+    }
+    peer.close();
+}
+
+#[test]
+fn renderer_health_diagnostics_are_current_owner_scoped_and_need_explicit_recovery() {
+    let (_directory, mut renderer, mut peer, mut controller, sessions) = health_runtime(
+        "module.exports={activate(ctx){globalThis.__healthContext=ctx;},deactivate(){delete globalThis.__healthContext}};",
+    );
+    assert!(
+        renderer
+            .attach_all(&sessions)
+            .iter()
+            .all(|(_, result)| result.is_ok())
+    );
+    let current = sessions
+        .iter()
+        .find(|session| session.target_id() == "window-a")
+        .unwrap();
+    let peer_target = sessions
+        .iter()
+        .find(|session| session.target_id() == "window-b")
+        .unwrap();
+    current.evaluate("__healthContext.reportDiagnostic({code:'page_failed',message:'Native toolbar unavailable'});__healthContext.reportDiagnostic({code:'page_failed',message:'still preparing',level:'info'});__healthContext.reportDiagnostic({code:'progress',message:'other work',level:'info'});true").unwrap();
+    renderer.pump_bindings().unwrap();
+    let list = read_health_list(&mut renderer, current);
+    let row = health_row(&list);
+    assert_eq!(
+        row["active"], true,
+        "diagnostics do not revoke an active owner's authority"
+    );
+    assert_eq!(row["renderer"]["diagnostics"][0]["code"], "page_failed");
+    assert_eq!(
+        row["renderer"]["diagnostics"][0]["message"],
+        "Native toolbar unavailable"
+    );
+    assert_eq!(row["renderer"]["diagnostics"][0]["level"], "error");
+    assert_eq!(
+        health_row(&read_health_list(&mut renderer, peer_target))["renderer"]["diagnostics"],
+        json!([])
+    );
+    current.evaluate("for(let i=3;i<32;i++)__healthContext.reportDiagnostic({code:'progress',message:'bounded '+i,level:'info'});__healthContext.reportDiagnostic({code:'page_failed',message:'ready',resolved:true});true").unwrap();
+    renderer.pump_bindings().unwrap();
+    let resolved = read_health_list(&mut renderer, current);
+    assert_eq!(
+        health_row(&resolved)["renderer"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        health_row(&resolved)["renderer"]["diagnostics"][0]["code"],
+        "progress"
+    );
+    current
+        .evaluate("globalThis.__retiredHealthContext=__healthContext;true")
+        .unwrap();
+    assert_eq!(
+        renderer
+            .manage_plugin(health_request(PluginControlAction::Reload))
+            .unwrap()
+            .outcome,
+        PluginControlOutcome::Applied
+    );
+    let reloaded = read_health_list(&mut renderer, current);
+    assert_eq!(health_row(&reloaded)["renderer"]["diagnostics"], json!([]));
+    assert!(
+        health_row(&reloaded)["generation"].as_u64().unwrap() > row["generation"].as_u64().unwrap()
+    );
+    let retired = current.evaluate("(()=>{try{__retiredHealthContext.reportDiagnostic({code:'progress',message:'late',resolved:true});return 'unexpected';}catch(error){return error.code;}})()").unwrap();
+    assert_eq!(
+        retired.pointer("/result/value"),
+        Some(&json!("plugin_deactivated"))
+    );
+    for session in &sessions {
+        session.evaluate("__healthContext.reportDiagnostic({code:'document_error',message:'this document'});true").unwrap();
+    }
+    current.evaluate("for(let i=1;i<32;i++)__healthContext.reportDiagnostic({code:'progress',message:'old document',level:'info'});true").unwrap();
+    renderer.pump_bindings().unwrap();
+    peer.request("Fixture.navigate", json!({"targetId":"window-a"}));
+    for change in controller.pump(Duration::ZERO).unwrap() {
+        renderer.apply_target_change(change).unwrap();
+    }
+    renderer.pump_bindings().unwrap();
+    let navigated = read_health_list(&mut renderer, current);
+    assert_eq!(health_row(&navigated)["renderer"]["diagnostics"], json!([]));
+    assert_eq!(
+        health_row(&navigated)["generation"],
+        health_row(&reloaded)["generation"]
+    );
+    current.evaluate("__healthContext.reportDiagnostic({code:'new_document_error',message:'new document owner'});true").unwrap();
+    renderer.pump_bindings().unwrap();
+    let new_owner = read_health_list(&mut renderer, current);
+    assert_eq!(
+        health_row(&new_owner)["renderer"]["diagnostics"][0]["code"],
+        "new_document_error",
+        "the new document owns a fresh diagnostic budget at the same plugin generation"
+    );
+    let untouched = read_health_list(&mut renderer, peer_target);
+    assert_eq!(
+        health_row(&untouched)["renderer"]["diagnostics"][0]["code"],
+        "document_error"
+    );
+    for session in &sessions {
+        renderer.deactivate_target(session.target_id()).unwrap();
+    }
+    assert!(renderer.status_snapshot().targets.is_empty());
+    peer.close();
+}
+
 #[test]
 fn isolated_world_budget_refuses_reload_before_retirement_and_reserves_rollback() {
     let directory = tempdir().unwrap();

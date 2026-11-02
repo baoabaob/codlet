@@ -14,6 +14,7 @@ pub const MAX_STATUS_REQUEST_BYTES: usize = 1024;
 pub const MAX_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
 pub const MAX_STATUS_TARGETS: usize = 128;
 pub const MAX_STATUS_PLUGINS_PER_TARGET: usize = 256;
+pub const MAX_STATUS_DIAGNOSTICS_PER_PLUGIN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,6 +103,22 @@ pub enum PluginLifecycle {
     Ready,
     Active,
     Stopping,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub level: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +131,12 @@ pub struct PluginStatus {
     pub context_present: bool,
     pub activation_confirmed: bool,
     pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<PluginError>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<PluginDiagnostic>,
+    #[serde(default)]
+    pub diagnostics_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +467,9 @@ mod tests {
             context_present: true,
             activation_confirmed: true,
             active: true,
+            error: None,
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
         };
         (
             RendererStatus {

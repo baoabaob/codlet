@@ -66,6 +66,7 @@ fn dispatch(
             catalog: &catalog,
             plugins: &[],
             external_observations: &[],
+            renderer_target: None,
             active_plugin_ids: BTreeSet::new(),
             manage_service: service,
         },

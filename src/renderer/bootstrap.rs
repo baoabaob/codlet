@@ -18,6 +18,8 @@ pub(super) const CODEX_SDK_SOURCE: &str = include_str!("../../bundled/runtime/co
 struct LifecycleResult {
     ok: bool,
     error: Option<String>,
+    #[serde(default)]
+    pending: bool,
 }
 
 pub(super) fn current_renderer_context(
@@ -160,7 +162,9 @@ pub(super) fn parse_lifecycle_result(result: Value) -> Result<(), String> {
         .ok_or_else(|| "Runtime.evaluate did not return a value".to_owned())?;
     let lifecycle: LifecycleResult = serde_json::from_value(value)
         .map_err(|error| format!("Runtime.evaluate returned invalid lifecycle data: {error}"))?;
-    if lifecycle.ok {
+    if lifecycle.pending {
+        Err("renderer lifecycle is still pending; completion was not confirmed".to_owned())
+    } else if lifecycle.ok {
         Ok(())
     } else {
         Err(lifecycle

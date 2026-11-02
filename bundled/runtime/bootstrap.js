@@ -356,6 +356,7 @@
         rejectPending(record, error);
         record.endpoints.clear();
         record.unavailable.clear();
+        record.diagnosticCodes.clear();
         if (plugins.get(record.id) === record) plugins.delete(record.id);
         if (activating.get(record.id) === record) activating.delete(record.id);
         stopping.delete(record);
@@ -547,6 +548,7 @@
                     cleanupPending: false,
                     disposeError: null,
                     diagnosticCount: 0,
+                    diagnosticCodes: new Set(),
                     restoringState: snapshot !== null,
                     initializing: true,
                     closed: false,
@@ -575,10 +577,17 @@
                         return i18n;
                     },
                     reportDiagnostic(diagnostic) {
-                        if (!diagnostic || typeof diagnostic.code !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(diagnostic.code) || typeof diagnostic.message !== 'string' || new TextEncoder().encode(diagnostic.message).byteLength > 4096 || !['info', 'error'].includes(diagnostic.level ?? 'error')) throw rpcError('invalid_diagnostic', 'expected a bounded diagnostic code, message and level');
-                        if (record.diagnosticCount >= 32) throw rpcError('diagnostic_limit', 'at most 32 diagnostics per renderer generation');
-                        callBinding(record, { v: 1, type: 'diagnostic', pluginId: record.id, generation: record.generation, code: diagnostic.code, message: diagnostic.message, level: diagnostic.level ?? 'error' });
-                        record.diagnosticCount++;
+                        if (!diagnostic || typeof diagnostic.code !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(diagnostic.code) || typeof diagnostic.message !== 'string' || new TextEncoder().encode(diagnostic.message).byteLength > 4096 || !['info', 'error'].includes(diagnostic.level ?? 'error') || diagnostic.resolved !== undefined && typeof diagnostic.resolved !== 'boolean') throw rpcError('invalid_diagnostic', 'expected a bounded diagnostic code, message, level and optional resolved boolean');
+                        if (record.closed) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+                        if (diagnostic.resolved === true) {
+                            // Clearing an owned observation must remain possible
+                            // after the emission budget has been used. There are
+                            // at most 32 recorded codes and each clears once.
+                            if (!record.diagnosticCodes.has(diagnostic.code)) return;
+                        } else if (record.diagnosticCount >= 32) throw rpcError('diagnostic_limit', 'at most 32 diagnostics per renderer generation');
+                        callBinding(record, { v: 1, type: 'diagnostic', pluginId: record.id, generation: record.generation, code: diagnostic.code, message: diagnostic.message, level: diagnostic.level ?? 'error', ...(diagnostic.resolved === true ? { resolved: true } : {}) });
+                        if (diagnostic.resolved === true) record.diagnosticCodes.delete(diagnostic.code);
+                        else { record.diagnosticCodes.add(diagnostic.code); record.diagnosticCount++; }
                     },
                     onDeactivate(listener) {
                         if (typeof listener !== 'function') throw rpcError('invalid_listener', 'onDeactivate requires a synchronous function');
