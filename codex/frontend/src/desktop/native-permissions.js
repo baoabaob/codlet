@@ -2,7 +2,8 @@ import {loadedAsset,uniqueModuleExport,componentSource} from '../host-discovery.
 import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import {NATIVE_PERMISSION_FUNCTIONS,matchesNativePermissionSource} from './permission-contracts.js';
 import {nativeMainInput,nativeInputBinding,workspaceError} from '../adapter/workspace-dom.js';
-import {currentPermissionCache,currentWindowsRequirement,permissionPickerBindings} from '../adapter/native-permission-cache.js';
+import {currentPermissionCache,currentWindowsRequirement,permissionPickerBindings,rspackPermissionPickerBindings} from '../adapter/native-permission-cache.js';
+import {loadRspackNative} from '../rspack-native.js';
 import {OWNED} from '../adapter/workspace-dom.js';
 
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -15,6 +16,16 @@ export async function loadNativePermissions({document,manager,load=url=>import(u
   if(!response.ok||response.url!==url)throw workspaceError('permissions_unsupported','Unable to read the loaded Native permission module');
   return response.text();
 }}) {
+  const runtime=asset===loadedAsset?await loadRspackNative({load,read,signal}):null;
+  if(runtime){
+    const modules=runtime.modules(),brand=name=>uniqueModuleExport(modules,value=>value?.__scopeBrand===name&&typeof value.id==='symbol',name);
+    const native={composerScope:brand('ComposerScope'),ThreadScope:brand('ThreadScope'),RouteScope:brand('RouteScope')};
+    const functions=Object.fromEntries(Object.entries(NATIVE_PERMISSION_FUNCTIONS).map(([name,contract])=>[name,uniqueModuleExport(modules,value=>typeof value==='function'&&matchesNativePermissionSource(componentSource(value),value.length,contract),'Native '+contract.label)]));
+    const bindings=rspackPermissionPickerBindings(runtime,functions.agentState);runtime.check();
+    for(const value of [...Object.values(native),...Object.values(functions)])runtime.pinValue(value);
+    if(!bindings.size)throw workspaceError('permissions_unsupported','Native permission picker import is unavailable');
+    return createNativePermissionReader({document,manager,native,...functions,bindings,check:runtime.check});
+  }
   const urls=await Promise.all(['shared','initial'].map(name=>asset===loadedAsset?resolveLoadedAsset(name,{read,signal}):asset(name)));
   const checkAssets=asset===loadedAsset?captureResolvedAssets({shared:urls[0],initial:urls[1]},{signal}):()=>signal?.throwIfAborted();
   const modules=new Map(await Promise.all(urls.map(async url=>{checkAssets();const value=await load(url);checkAssets();return[url,value];})));
@@ -32,7 +43,7 @@ export async function loadNativePermissions({document,manager,load=url=>import(u
   return createNativePermissionReader({document,manager,native,...functions,bindings});
 }
 
-export function createNativePermissionReader({document,manager,native,reduce,convert,toSettings,modeFromPolicy,profileMode,defaultMode,windowsMode,cyberModel,agentState,bindings}) {
+export function createNativePermissionReader({document,manager,native,reduce,convert,toSettings,modeFromPolicy,profileMode,defaultMode,windowsMode,cyberModel,agentState,bindings,check=()=>{}}) {
   const listeners=new Set();let observer,watched;
   const track=(id,trigger)=>{
     if(!listeners.size||!document.defaultView.MutationObserver)return;
@@ -50,6 +61,7 @@ export function createNativePermissionReader({document,manager,native,reduce,con
     observer.observe(parent,{subtree:true,childList:true,attributes:true,attributeFilter:['disabled','aria-disabled']});
   };
   const inputs=(id,conversation)=>{
+    check();
     const input=nativeMainInput(document,native),binding=input&&nativeInputBinding(input,native);
     if(!binding||binding.threadId!==id)throw workspaceError('permissions_not_selected','Native permission input is not confirmed for this conversation');
     const cache=currentPermissionCache(document,input,{agentState,bindings});
@@ -96,7 +108,7 @@ export function createNativePermissionReader({document,manager,native,reduce,con
     }
     return{options,profiles};
   }
-  const withConversation=(id,read)=>manager.rpc?manager.getConversation(id).then(read):read(manager.getConversation(id));
+  const withConversation=(id,read)=>{check();const current=value=>{check();return read(value);};return manager.rpc?manager.getConversation(id).then(current):current(manager.getConversation(id));};
   function describe(id,{canonical=false}={},conversation){
     const cache=inputs(id,conversation),menu=cache.menu,visible=menu.options,allowed=cache.reduced.availableAgentModes;
     const profile=cache.settings.activePermissionProfile?.id??cache.settings.permissions;

@@ -7,6 +7,12 @@ function initialize(){return(initialize=once(()=>{prepare();shell={Root:root,Hea
 export {shell as shellExport,initialize as initializeExport};`;
 const components = () => ({ Root() {}, Header() {}, HeaderToolbar() {} });
 
+test('opaque Native proxies and inherited component names do not claim the page header', () => {
+  const proxy = new Proxy({}, { get: () => function opaque() {} });
+  const header = components(), inherited = Object.create(header);
+  assert.equal(resolveNativePageHeader([{ module: { proxy, inherited, header }, source: '' }]), header);
+});
+
 test('structural page discovery initializes only the live AppShell export selected by its lexical lazy assignment', () => {
   assert.deepEqual(nativePageHeaderContract(source), { initializer: 'initializeExport', value: 'shellExport' });
   let value, calls = 0, checks = 0;

@@ -20,6 +20,19 @@ test('initialization reads host and cached identities; metadata enumeration neve
   await f.manager.ready;assert.equal(f.calls.length,0);assert.deepEqual(await f.manager.readLoadedThreadMetadata(),[{id:'a'},{id:'b'}]);assert.equal(conversations,0);
   await f.manager.dispose();assert.equal(f.nativeDisposed,0);
 });
+test('the current Native list summary replaces only an explicitly removed metadata endpoint',async()=>{
+  let oldCalls=0,conversations=0;const requested=[];
+  const f=fixture({getCachedThreadIds:async()=>['a','retired'],getCachedThreadMetadata:async()=>{oldCalls++;throw Error("'getCachedThreadMetadata' is not a function.");},getThreadListSummary:async id=>{requested.push(id);return id==='retired'?null:{conversationId:id,hostId:'local',title:'Current task',threadRuntimeStatus:{type:'idle'},parentThreadId:null};},getConversation:async()=>{conversations++;}});
+  await f.manager.ready;
+  const values=await f.manager.readLoadedThreadMetadata();assert.equal(values.length,1);assert.equal(values[0].id,'a');assert.equal(values[0].name,'Current task');assert.deepEqual(values[0].status,{type:'idle'});
+  await f.manager.readLoadedThreadMetadata(['a']);assert.equal(oldCalls,1);assert.deepEqual(requested,['a','retired','a']);assert.equal(conversations,0);
+  f.rpc.getThreadListSummary=async()=>({conversationId:'other',hostId:'local'});await assert.rejects(f.manager.readLoadedThreadMetadata(['a']),{code:'desktop_summary_drift'});await f.manager.dispose();
+});
+test('metadata failures do not trigger an alternate request',async()=>{
+  const failure=Error('Native transport disconnected');let alternate=0;
+  const f=fixture({getCachedThreadMetadata:async()=>{throw failure;},getThreadListSummary:async()=>{alternate++;}});await f.manager.ready;
+  await assert.rejects(f.manager.readLoadedThreadMetadata(['a']),error=>error===failure);assert.equal(alternate,0);await f.manager.dispose();
+});
 test('the first Native sidebar gesture uses cached identity metadata without preparing its history',async()=>{
   let reads=0;const f=fixture({getCachedThreadIds:async()=>['sidebar-thread'],getConversation:async()=>{reads++;}});await f.manager.ready;
   const dom=new JSDOM('<div id="root"><button><span data-thread-title>Task</span></button></div>'),document=dom.window.document,root=document.getElementById('root'),title=document.querySelector('[data-thread-title]');

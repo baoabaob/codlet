@@ -4,7 +4,7 @@ Codlet is a lightweight plugin loader for Codex Desktop. Describe a customizatio
 
 Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. Core includes the Codex UI and Desktop compatibility modules and exposes them through `context.codex`. The management GUI remains an optional plugin maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). Separate Adapter installation is no longer required.
 
-The Windows x64 **[1.0.0-rc.23 preview](https://github.com/baoabaob/codlet/releases/tag/v1.0.0-rc.23)** targets official client package `26.1027.3384.0` / app `26.1027.30824` / build `22943`, with Desktop `0.2.22`, UI `0.1.20` and optional GUI `1.0.0-rc.7`. It updates plugin page readiness, Native toolbar discovery, plugin health reporting and transcript position restoration. The production upgrade from rc.22 and installed page/health checks passed. See the [validation record](docs/releases/1.0.0-rc.23/validation.md).
+The Windows x64 **[1.0.0-rc.24 preview](https://github.com/baoabaob/codlet/releases/tag/v1.0.0-rc.24)** supports official client package `26.1103.3517.0` / app `26.1103.31037` / build `25241`, with Desktop `0.2.23`, UI `0.1.21` and optional GUI `1.0.0-rc.7`. It adapts to Native's Rspack modules, current thread metadata, permissions, working state and workspace interfaces. Independent Windows acceptance verified synthetic messages, history, page restoration and transcript/viewport lifecycle. See the [validation record](docs/releases/1.0.0-rc.24/validation.md).
 
 Scroll and drag-region fixes have focused regression and live Native evidence. The final exact Split Workbench cold-start matrix was not executed after the test VM failed; physical window dragging is outside this acceptance. The [rc.22 validation](docs/releases/1.0.0-rc.22/validation.md) and [publication record](docs/releases/1.0.0-rc.22/publication.md) retain the previous release's evidence.
 
@@ -12,9 +12,9 @@ The [rc.21 validation record](docs/releases/1.0.0-rc.21/validation.md) retains t
 
 ## Use Codlet
 
-On Windows, download the **[Windows x64 setup EXE](https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.23/Codlet-1.0.0-rc.23-windows-x64-setup.exe)** for installation and upgrades, then open `Codlet-Launcher.exe`. The installer offers scope, folder, optional official plugins, shortcuts, and PATH choices. On macOS, open `Codlet.app` from Applications. The official Codex client must already be installed separately. See [installation and distribution](docs/distribution.md).
+On Windows, download the **[Windows x64 setup EXE](https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.24/Codlet-1.0.0-rc.24-windows-x64-setup.exe)** for installation and upgrades, then open `Codlet-Launcher.exe`. The installer offers scope, folder, optional official plugins, shortcuts, and PATH choices. On macOS, open `Codlet.app` from Applications. The official Codex client must already be installed separately. See [installation and distribution](docs/distribution.md).
 
-For the rc.22 MSI upgrade to rc.23, save your work, fully quit Codex/Codlet and run the rc.23 setup EXE directly. It retains the registered folder, scope and feature choices. Core health-reporting changes take effect after a full restart. Custom plugins need their own package or source updates.
+For an MSI installation, save your work, fully quit Codex/Codlet and run the rc.24 setup EXE. It retains the registered folder, scope and feature choices. The new Native adapter takes effect after a full restart. Custom plugins need their own package or source updates.
 
 Setup updates Codlet only. Complete any official-client update through its existing update process. If that process opens the official client, fully quit it after updating, then start from the **Codlet** shortcut or installed `Codlet-Launcher.exe`.
 

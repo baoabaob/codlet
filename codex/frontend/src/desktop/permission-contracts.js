@@ -4,7 +4,7 @@ export const NATIVE_PERMISSION_FUNCTIONS = Object.freeze({
   reduce: { label: 'permission option reducer', markers: ['availableAgentModes','canShowCustom','configNonFullAccessMode','hasAuthoritativeGuardianApprovalDefault','showGuardianOption'] },
   convert: { label: 'permission converter', arities: [3,4], markers: ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'] },
   toSettings: { label: 'permission wire settings', arity: 1, markers: ['activePermissionProfile','sandboxPolicy','permissions:'], wireSettings: true },
-  modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'], canonicalMode: true },
+  modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom'], canonicalMode: true },
   profileMode: { label: 'built-in permission profile', arity: 2, markers: [':read-only',':workspace',':danger-full-access'] },
   defaultMode: { label: 'default workspace mode', arity: 1, markers: ['isProjectless','requirements','granular','auto'], workspaceDefault: true },
   windowsMode: { label: 'Windows default permission mode', arity: 1, markers: ['defaultWorkspaceWriteMode','isWindowsSandboxRequired','read-only'] },
@@ -18,17 +18,20 @@ function permissionProjection(source, role) {
   try {
     const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),parameter=fn.params?.[0];
     if(fn.async||fn.generator||fn.params.length!==1||parameter.type!=='Identifier')return false;
-    const result=fn.body.type==='BlockStatement'&&fn.body.body.length===1&&fn.body.body[0].type==='ReturnStatement'?fn.body.body[0].argument:fn.body;
+    let result=fn.body.type==='BlockStatement'&&fn.body.body.length===1&&fn.body.body[0].type==='ReturnStatement'?fn.body.body[0].argument:fn.body;
     const member=(node,...keys)=>{
       for(let index=keys.length-1;index>=0;index--){if(node?.type!=='MemberExpression'||node.computed||node.optional||node.property.name!==keys[index])return false;node=node.object;}
       return node?.type==='Identifier'&&node.name===parameter.name;
     };
-    const nonNull=(node,key)=>node?.type==='BinaryExpression'&&node.operator==='!='&&member(node.left,key)&&literal(node.right)===null;
+    const nullTest=(node,key,operator)=>node?.type==='BinaryExpression'&&node.operator===operator&&(member(node.left,key)&&literal(node.right)===null||member(node.right,key)&&literal(node.left)===null);
+    const nonNull=(node,key)=>nullTest(node,key,'!=');
     const object=(node,key,...value)=>node?.type==='ObjectExpression'&&node.properties.length===1&&node.properties[0].type==='Property'&&
       !node.properties[0].computed&&!node.properties[0].method&&(node.properties[0].key.name??literal(node.properties[0].key))===key&&member(node.properties[0].value,...value);
-    if(role==='wire')return result?.type==='ConditionalExpression'&&result.test?.type==='BinaryExpression'&&result.test.operator==='=='&&
-      member(result.test.left,'activePermissionProfile')&&literal(result.test.right)===null&&
-      object(result.consequent,'sandboxPolicy','sandboxPolicy')&&object(result.alternate,'permissions','activePermissionProfile','id');
+    if(role==='wire')return result?.type==='ConditionalExpression'&&(nullTest(result.test,'activePermissionProfile','==')&&object(result.consequent,'sandboxPolicy','sandboxPolicy')&&object(result.alternate,'permissions','activePermissionProfile','id')||nullTest(result.test,'activePermissionProfile','!=')&&object(result.alternate,'sandboxPolicy','sandboxPolicy')&&object(result.consequent,'permissions','activePermissionProfile','id'));
+    if(fn.body.type==='BlockStatement'&&fn.body.body.length===2){
+      const[declaration,returned]=fn.body.body,value=declaration?.declarations?.[0],conditional=returned?.argument;
+      if(declaration?.type==='VariableDeclaration'&&declaration.declarations.length===1&&value.id.type==='Identifier'&&returned.type==='ReturnStatement'&&conditional?.type==='ConditionalExpression'&&conditional.test?.type==='BinaryExpression'&&conditional.test.operator==='!='&&literal(conditional.test.left)===null&&conditional.test.right.name===value.id.name&&conditional.consequent.name===value.id.name)result={type:'LogicalExpression',operator:'??',left:value.init,right:conditional.alternate};
+    }
     return result?.type==='LogicalExpression'&&result.operator==='??'&&result.left.type==='CallExpression'&&result.left.callee.type==='Identifier'&&
       result.left.arguments.length===1&&result.left.arguments[0].type==='Identifier'&&result.left.arguments[0].name===parameter.name&&
       result.right.type==='ConditionalExpression'&&result.right.test.type==='LogicalExpression'&&result.right.test.operator==='&&'&&
@@ -50,7 +53,7 @@ function workspaceDefault(source) {
     const test=result?.test,check=test?.right;
     return result?.type==='ConditionalExpression'&&literal(result.consequent)==='granular'&&literal(result.alternate)==='auto'&&
       test?.type==='LogicalExpression'&&test.operator==='&&'&&input(test.left,'isProjectless')&&
-      check?.type==='CallExpression'&&check.callee.type==='Identifier'&&check.arguments.length===2&&
+      check?.type==='CallExpression'&&['Identifier','MemberExpression'].includes((check.callee.type==='SequenceExpression'?check.callee.expressions.at(-1):check.callee).type)&&check.arguments.length===2&&
       literal(check.arguments[0])==='granular'&&input(check.arguments[1],'requirements');
   }catch{return false;}
 }

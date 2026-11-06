@@ -93,6 +93,13 @@ test('compiler cache roles follow lexical assignments after relocation without a
   const changed=f.AgentState.toString().replace('if(early&&!review)','if(early||!review)');
   assert.equal(permissionCachePlan(f.Picker.toString(),changed,{callee:'readState'}),null,'an unproven model guard cannot authorize an early-return projection');
 });
+test('later compiler reuse of a picker argument does not claim its permission input cache',()=>{
+  const f=compilerSource(),source=f.Picker.toString(),reused=source.replace('return null;', 'args={conversationId,hostId,cwdOverride};memo[26]=args;args="icon";memo[47]=args;return null;');
+  const plan=permissionCachePlan(reused,f.AgentState.toString(),{callee:'readState'});
+  assert.deepEqual(plan.viewInputSlots,[f.v.input]);
+  const changed=source.replace('readState(args)','readState(foreign)');
+  assert.equal(permissionCachePlan(changed,f.AgentState.toString(),{callee:'readState'}),null);
+});
 
 test('permission cache projections require the exact current Native input and config/sandbox objects',t=>{
   for(const mutate of [f=>{f.args.conversationId='foreign-thread';},f=>{f.agentFrame[f.a.config]={...f.config.resolvedConfig};},f=>{f.agentFrame[f.a.sandbox]={...f.thread.threadSandboxPolicy};},f=>{f.viewFrame[f.v.review]=true;},f=>{f.picker.updateQueue.memoCache.data.push([...f.agentFrame]);}]){

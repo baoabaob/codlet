@@ -6,7 +6,7 @@ const fail = message => Object.assign(new Error(message), { code: 'ui_build_drif
 const property = node => node?.computed ? node.key?.value : node.key?.name ?? node.key?.value;
 const headerObject = node => node?.type === 'ObjectExpression' && ['Root', 'Header', 'HeaderToolbar'].every(name =>
   node.properties.filter(item => item.type === 'Property' && property(item) === name).length === 1);
-const headerValue = value => value && component(value.Root) && component(value.Header) && component(value.HeaderToolbar);
+const headerValue = value => value && ['Root','Header','HeaderToolbar'].every(key=>component(Object.getOwnPropertyDescriptor(value,key)?.value));
 
 // The modern AppShell is a live export assigned by its own lazy initializer.
 // Resolve both exports from the same lexical assignment; an unrelated function

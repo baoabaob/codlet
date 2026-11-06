@@ -1,6 +1,7 @@
 import {loadedAsset,localConnection,hostFibers,linkedNodes} from '../host-discovery.js';
 import {resolveLoadedAsset,captureResolvedAssets} from '../host-assets.js';
 import {awaitNativeInitialization} from '../adapter/native-readiness.js';
+import {loadRspackNative,rspackExportRecords,rspackReference} from '../rspack-native.js';
 const pending=message=>Object.assign(new Error(message),{code:'desktop_host_pending'});
 const drift=message=>Object.assign(new Error(message),{code:'desktop_working_drift'});
 
@@ -62,6 +63,35 @@ export function nativeWorkingState(response,pending,publishing){
 }
 
 export async function loadNativeWorking({load=url=>import(url),connect=localConnection,scope=mountedWorkingScope,asset=loadedAsset,read,signal,report=()=>{}}={}){
+  const runtime=asset===loadedAsset?await loadRspackNative({load,read,signal}):null;
+  if(runtime){
+    const connection=connect();let retired=false;
+    const notify=error=>{try{report(error);}catch{}};
+    const dispose=()=>{if(!retired){retired=true;signal?.removeEventListener('abort',abort);return connection.dispose?.();}};
+    const abort=()=>{try{Promise.resolve(dispose()).catch(notify);}catch(error){notify(error);}};
+    signal?.addEventListener('abort',abort,{once:true});
+    try{
+      await connection.ready;signal?.throwIfAborted();connection.check?.();runtime.check();const facade=scope(connection),records=rspackExportRecords(runtime,value=>value?.scope===connection.node.token&&typeof value.read==='function');
+      const markers={response:['hasInProgressOwnedWork','latestTurnHasSystemError','isResponseInProgress'],pending:['mcpServerElicitationKind','userInputAsync','blocking'],publishing:['publishing']};
+      const selections=Object.fromEntries(Object.entries(markers).map(([role,required])=>{
+        const matches=records.filter(({record,expression,value})=>{
+          if(expression?.type!=='CallExpression'||value?.scope!==connection.node.token||typeof value.read!=='function'||rspackReference(runtime,record,expression.arguments[0])!==connection.node.token||!required.every(marker=>record.info.text(expression).includes(marker)))return false;
+          const callback=expression.arguments[1];if(callback?.type!=='ArrowFunctionExpression'||callback.params.length!==2)return false;
+          if(role!=='publishing')return callback.params[0]?.type==='ObjectPattern'&&['conversationId','hostId'].every(key=>callback.params[0].properties.some(p=>(p.key?.name??p.key?.value)===key));
+          const body=callback.body,getter=callback.params[1]?.type==='ObjectPattern'&&callback.params[1].properties.find(p=>(p.key?.name??p.key?.value)==='get')?.value;
+          if(body.type!=='BinaryExpression'||body.operator!=='==='||callback.params[0].type!=='Identifier'||getter?.type!=='Identifier')return false;
+          const literal=node=>node?.type==='Literal'?node.value:node?.type==='TemplateLiteral'&&!node.expressions.length?node.quasis[0].value.cooked:null;
+          const call=literal(body.left)==='publishing'?body.right:literal(body.right)==='publishing'?body.left:null;
+          return call?.type==='CallExpression'&&call.callee.name===getter.name&&call.arguments.length===2&&call.arguments[1]?.name===callback.params[0].name;
+        });
+        const unique=[...new Map(matches.map(value=>[value.value,value])).values()];if(unique.length!==1)throw drift(`A unique Native ${role} selector is required`);return[role,unique[0]];
+      }));
+      for(const selection of Object.values(selections))runtime.pin(selection.record);
+      const check=()=>{signal?.throwIfAborted();runtime.check();connection.check?.();if(retired||Object.values(selections).some(({record,key,value})=>record.namespace[key]!==value))throw drift('Native Working selectors were replaced');};
+      const read=(id,get)=>nativeWorkingState(...['response','pending','publishing'].map(role=>get(selections[role].value,{hostId:'local',conversationId:id})));
+      return{read(id){check();return read(id,facade.get.bind(facade));},watch(id,listener){check();return facade.watch(({get})=>{try{check();listener(read(id,get));}catch(error){listener(null,error);}});},dispose};
+    }catch(error){try{await dispose();}catch(cleanup){notify(cleanup);}throw error;}
+  }
   const [initialUrl,sharedUrl]=await Promise.all(['initial','shared'].map(name=>asset===loadedAsset?resolveLoadedAsset(name,{read,signal}):asset(name)));
   const checkAssets=asset===loadedAsset?captureResolvedAssets({initial:initialUrl,shared:sharedUrl},{signal}):()=>signal?.throwIfAborted();
   const profile=WORKING_PROFILES.find(value=>initialUrl===`app://-/assets/${value.initial}`&&sharedUrl===`app://-/assets/${value.shared}`);

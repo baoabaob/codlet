@@ -12,9 +12,12 @@ if(path.resolve(config.labRoot)!==root||path.resolve(state.labRoot)!==root||!['r
 const powershell=path.join(process.env.SYSTEMROOT??'C:/Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
 const pids=[state.managerPid,state.hostPid,state.backendPid,state.desktopPid];if(pids.some(pid=>!Number.isSafeInteger(pid)||pid<=0))throw Error('Missing process ownership');
 const ps=source=>JSON.parse(execFileSync(powershell,['-NoProfile','-NonInteractive','-Command',source],{encoding:'utf8',windowsHide:true}).trim());
-const facts=ps(`@(${pids.join(',')}) | ForEach-Object { $codletProcess=Get-Process -Id $_ -ErrorAction Stop; [pscustomobject]@{pid=$codletProcess.Id;created=$codletProcess.StartTime.ToUniversalTime().ToString('o');filetime=$codletProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString();image=$codletProcess.Path} } | ConvertTo-Json -Compress`);
+const facts=ps(`@(${pids.join(',')}) | ForEach-Object { $codletProcess=Get-Process -Id $_ -ErrorAction Stop; $codletCim=Get-CimInstance Win32_Process -Filter ('ProcessId='+$codletProcess.Id); [pscustomobject]@{pid=$codletProcess.Id;created=$codletProcess.StartTime.ToUniversalTime().ToString('o');cimCreated=$codletCim.CreationDate.ToUniversalTime().ToString('o');filetime=$codletProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString();image=$codletProcess.Path} } | ConvertTo-Json -Compress`);
 const byPid=new Map(facts.map(fact=>[fact.pid,fact]));
-if(byPid.get(state.managerPid).created!==state.managerCreated||byPid.get(state.desktopPid).filetime!==String(state.desktopCreated)||byPid.get(state.backendPid).created!==state.backendIdentity.created)throw Error('Process creation identity mismatch');
+// The listener identity was captured through CIM (microseconds), whereas the
+// coordinator and Native handles retain Windows FILETIME (100 ns). Compare each
+// against the same provider that originally established that process identity.
+if(byPid.get(state.managerPid).created!==state.managerCreated||byPid.get(state.desktopPid).filetime!==String(state.desktopCreated)||byPid.get(state.backendPid).cimCreated!==state.backendIdentity.created)throw Error('Process creation identity mismatch');
 if(path.resolve(byPid.get(state.hostPid).image).toLowerCase()!==path.join(directory,'client/codlet-lab.exe').toLowerCase()||path.resolve(byPid.get(state.backendPid).image).toLowerCase()!==path.resolve(config.officialCli).toLowerCase())throw Error('Core/backend executable mismatch');
 if(path.resolve(byPid.get(state.desktopPid).image).toLowerCase()!==path.join(path.dirname(path.dirname(config.officialCli)),'ChatGPT.exe').toLowerCase())throw Error('Desktop executable mismatch');
 const endpoint=new URL(state.endpoint);if(endpoint.protocol!=='ws:'||endpoint.hostname!=='127.0.0.1'||!/^\d+$/.test(endpoint.port)||endpoint.pathname!=='/'||endpoint.search)throw Error('Non-local backend endpoint');

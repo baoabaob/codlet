@@ -21,7 +21,7 @@ export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
   composerFrame: { label: 'composer frame', markers: ['hideThreadContent', 'canInteract', 'shouldResume', 'threadAccess', 'hostMcpApps'], capabilities: ['composer'] },
   shortcutCapture: { label: 'shortcut capture control', markers: ['allowsBareModifiers', 'allowsSequences', 'captureAriaLabel', 'onStartCapture'],
     inputProperties: ['allowsBareModifiers', 'allowsSequences', 'captureAriaLabel', 'onStartCapture', 'onCapture', 'onCancelCapture'], capabilities: ['shortcuts'] },
-  eventAccelerator: { label: 'keyboard event accelerator', arity: 1, markers: ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'Command', '.join('], capabilities: ['shortcuts'] },
+  eventAccelerator: { label: 'keyboard event accelerator', arity: 1, markers: ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'Command', '.join('], eventAccelerator:true,capabilities: ['shortcuts'] },
   settingsRow: { label: 'settings row', markers: ['labelSizing', 'controlSizing', 'description', 'control'], capabilities: ['shortcuts'] },
   commandHook: { label: 'command hook', markers: ['contextHandler', 'keyboardHandler', 'menuItem', 'useEffect'], capabilities: ['shortcuts'] },
   keyboardDispatch: { label: 'keyboard command dispatch', arity: 3, markers: ['keyboard_shortcut'], capabilities: ['shortcuts'] },
@@ -35,8 +35,19 @@ export function matchesWorkspaceFunction(source, arity, contract, inputPropertie
   return (!contract.arity && contract.arity !== 0 || arity === contract.arity) &&
     contract.markers.every(marker => source.includes(marker)) &&
     (!contract.localNavigationDelegate || isNativeLocalNavigationDelegate(source)) &&
+    (!contract.eventAccelerator||isNativeEventAccelerator(source))&&
     (!contract.shortcutBindings || isNativeShortcutBindings(source)) &&
     (!contract.inputProperties || contract.inputProperties.every(name => inputProperties.includes(name)));
+}
+function isNativeEventAccelerator(source){
+  try{
+    const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),input=fn.params[0];if(input?.type!=='Identifier')return false;
+    const pending=[fn.body],nodes=[];while(pending.length){const node=pending.pop();if(!node?.type)continue;nodes.push(node);if(node!==fn.body&&['FunctionExpression','ArrowFunctionExpression','FunctionDeclaration'].includes(node.type))continue;for(const value of Object.values(node))if(Array.isArray(value))pending.push(...value);else if(value?.type)pending.push(value);}
+    const joins=nodes.filter(node=>node.type==='CallExpression'&&node.callee?.type==='MemberExpression'&&!node.callee.computed&&node.callee.property.name==='join'&&node.arguments.length===1&&node.arguments[0].value==='+');
+    if(joins.length!==1||joins[0].callee.object.type!=='Identifier')return false;
+    const array=joins[0].callee.object.name;
+    return ['ctrlKey','metaKey','altKey','shiftKey'].every(key=>nodes.some(node=>node.type==='LogicalExpression'&&node.operator==='&&'&&node.left.type==='MemberExpression'&&node.left.object.name===input.name&&node.left.property.name===key&&node.right.type==='CallExpression'&&node.right.callee?.object?.name===array&&node.right.callee.property?.name==='push'));
+  }catch{return false;}
 }
 
 // The binding helper consumes command/keymap/platform arguments and maps each

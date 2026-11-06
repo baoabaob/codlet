@@ -5,7 +5,8 @@ import { createThreadRestoration } from './thread-restoration.js';
 import { createLoadedThreads } from './loaded-threads.js';
 import { threadIdentity } from './thread-identity.js';
 import { createNativeWorking } from './native-working.js';
-import { publishedNotificationExports, nativePublishedNotifications } from './native-published-notifications.js';
+import { publishedNotificationExports, nativePublishedNotifications,rspackPublishedNotifications } from './native-published-notifications.js';
+import {loadRspackNative} from '../rspack-native.js';
 import { createThreadOpener } from './thread-navigation.js';
 import { reviewedNavigator } from '../native-navigation.js';
 import { createPermissions, validatePermissionState } from './permissions.js';
@@ -151,7 +152,7 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
 
 async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
     const deadline = Date.now() + readyTimeoutMs;
-    let connection, sharedUrl;
+    let connection, sharedUrl,runtime;
     const retirements = [];
     const retire = () => {
         if (!connection) return;
@@ -171,7 +172,8 @@ async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
             const candidate = localConnection(); connection = candidate;
             await candidate.ready;
             if (signal?.aborted) throw fail('adapter_deactivated', 'Desktop adapter retired during discovery');
-            sharedUrl = loadedAsset('shared');
+            runtime=await loadRspackNative({load:loadModule,signal});
+            sharedUrl = runtime?.entry??loadedAsset('shared');
             if (!candidate.client.getAppServerVersion()) throw fail('desktop_connection_not_ready', 'Waiting for the local App Server');
             break;
         }
@@ -181,11 +183,13 @@ async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
             await probeTick(signal, 100);
         }
     }
-    const module = await loadModule(sharedUrl);
+    const modules=runtime?[...runtime.modules().values()]:[await loadModule(sharedUrl)];
+    const module=runtime?Object.fromEntries(modules.flatMap((value,index)=>Object.entries(value).map(([key,value])=>[index+':'+key,value]))):modules[0];
     if (signal?.aborted) throw fail('adapter_deactivated', 'Desktop adapter retired during discovery');
     const postbox = uniqueExport(module, value => value && typeof value.postMessage === 'function' &&
         typeof value.getState === 'function' && typeof value.setState === 'function' &&
         Object.getOwnPropertyDescriptor(value, 'postMessage')?.writable === true, 'message transport');
+    runtime?.pinValue(postbox);
     const postboxExports = Object.keys(module).filter(key => module[key] === postbox);
     const { manager, client } = connection;
     for (const method of ['sendRequest', 'getConversation', 'getStreamRole', 'addNotificationCallback', 'addConversationStateCallback'])
@@ -200,17 +204,21 @@ async function probeDiscoveredDesktop(loadModule, readyTimeoutMs, signal) {
         // Discovery scans candidates once. Steady-state callbacks verify the
         // captured owner and bindings without rereading unrelated host services.
         accepted.check();
-        if (loadedAsset('shared') !== sharedUrl ||
+        runtime?.check();
+        if ((!runtime&&loadedAsset('shared') !== sharedUrl) ||
             postboxExports.some(key => module[key] !== postbox) || client.getAppServerVersion() !== build.appServerVersion)
             throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
     };
     let notifications;
     if (manager.rpc) {
+      if(runtime)notifications=rspackPublishedNotifications(runtime,postbox,check);
+      else {
         const current=()=>{if(signal?.aborted)throw fail('adapter_deactivated','Desktop adapter retired during discovery');check();};
         const response = await fetch(sharedUrl, {credentials:'omit',signal});current();
         if (!response.ok || response.url !== sharedUrl) throw fail('desktop_notification_stream_drift','Unable to read the current Native notification stream');
         const source = await response.text();current();
         notifications = nativePublishedNotifications({namespace:module,selection:publishedNotificationExports(source),postbox,check});
+      }
     }
     if (signal?.aborted) throw fail('adapter_deactivated','Desktop adapter retired during discovery');
     connection = null;

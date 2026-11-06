@@ -57,6 +57,8 @@ const AUDITED_PACKAGE_VERSIONS: &[&str] = &[
     "26.1007.9446.0",
     // Exact Dev/WS/IPC review: docs/native-isolation-26.1013.3656.0.json.
     "26.1013.3656.0",
+    // Exact Dev/WS/IPC review: docs/native-isolation-26.1103.3517.0.json.
+    "26.1103.3517.0",
 ];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
@@ -1302,13 +1304,19 @@ fn restricted_features(package_version: &str) -> Value {
     });
     if matches!(
         package_version,
-        "26.1007.2314.0" | "26.1007.9446.0" | "26.1013.3656.0"
+        "26.1007.2314.0" | "26.1007.9446.0" | "26.1013.3656.0" | "26.1103.3517.0"
     ) {
         // Removed from this build's strict partial feature schema. Keeping
         // unknown keys aborts Native bootstrap before a renderer exists.
         let object = features.as_object_mut().unwrap();
         object.remove("computerUseNodeRepl");
         object.remove("quickChat");
+    }
+    if package_version == "26.1103.3517.0" {
+        features
+            .as_object_mut()
+            .unwrap()
+            .remove("browserExtensions");
     }
     features
 }
@@ -1715,6 +1723,13 @@ mod tests {
             if key != "quickChat" && key != "computerUseNodeRepl" {
                 assert_eq!(current.get(key), Some(value));
                 assert_eq!(*value, false);
+            }
+        }
+        let latest = restricted_features("26.1103.3517.0");
+        assert!(latest.get("browserExtensions").is_none());
+        for (key, value) in current.as_object().unwrap() {
+            if key != "browserExtensions" {
+                assert_eq!(latest.get(key), Some(value));
             }
         }
     }

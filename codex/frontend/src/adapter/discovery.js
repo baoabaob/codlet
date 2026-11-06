@@ -5,6 +5,7 @@ import {parseExpressionAt} from 'acorn';
 import {workspaceLexicalReferences,visitWorkspaceSource} from './workspace-source.js';
 import {resolveNativePageHeader} from './page-header.js';
 import {workspaceRuntimeReferences} from './workspace-discovery.js';
+import {loadRspackNative,isRspackNamespace} from '../rspack-native.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export const COMPOSER_PROFILE = Object.freeze({ rootAttribute: 'data-codex-composer-root', scrollAreaAttribute: 'data-composer-utility-bar-scroll-area' });
@@ -157,6 +158,28 @@ export async function discoverNative({ load = url => import(url), signal, read =
   return response.text();
 } } = {}) {
   desktopDocument();
+  const runtime=await loadRspackNative({load,read,signal});
+  if(runtime){
+    const records=[...runtime.records().values()].filter(record=>isRspackNamespace(record.namespace)),modules=records.map(record=>record.namespace);
+    const one=(predicate,name)=>{const values=[...new Set(modules.filter(predicate))];if(values.length!==1)throw fail('ui_react_drift',`A unique Native ${name} module is required`);return values[0];};
+    const navigation=navigationComponents(modules);
+    const React=one(value=>typeof value.createElement==='function'&&typeof value.useState==='function'&&typeof value.useContext==='function'&&typeof value.version==='string','React');
+    const DOM=one(value=>typeof value.flushSync==='function'&&typeof value.createPortal==='function','React DOM');
+    const Client=runtime.client();
+    if(React.version!==DOM.version)throw fail('ui_react_drift','Native React and DOM versions differ');
+    const shells=[...new Set(modules.flatMap(module=>Object.values(module)))].filter(value=>value&&['Root','Header','HeaderToolbar','MainContentLayout','RightPanelOutlet','DetailPanelOutlet'].every(key=>component(Object.getOwnPropertyDescriptor(value,key)?.value)));
+    const chains=[...document.querySelectorAll('[data-app-shell-main-surface],[data-app-shell-frame]')].map(currentElementAncestry).filter(Boolean);
+    const mounted=shells.filter(shell=>chains.some(chain=>chain.some(fiber=>fiber.type===shell.Root||fiber.elementType===shell.Root||fiber.type===shell.Root.type)));
+    if(mounted.length>1)throw fail('ui_build_drift','The mounted Native page shell is ambiguous');
+    const header=mounted.length===1?mounted[0]:shells.length===1?shells[0]:undefined;
+    if(!header)throw fail('ui_build_drift','The mounted Native application has no page toolbar');
+    for(const value of [React,DOM,Client,header,...Object.values(navigation)])runtime.pinValue(value);
+    runtime.check();
+    const appExports=modules.flatMap(module=>Object.values(module)),useStartNewConversation=newTaskHook(Object.fromEntries(appExports.map((value,index)=>[index,value])));
+    if(useStartNewConversation)runtime.pinValue(useStartNewConversation);
+    return{React,DOM,Client,...navigation,resolveNavigation:()=>{runtime.check();return nativeNavigation(React,modules);},NotificationBadge:notificationBadge(appExports),...(navigation.RailTooltip?{RailTooltip:adaptRailTooltip(React,navigation.RailTooltip)}:{}),Header:header.Header,HeaderToolbar:header.HeaderToolbar,
+      nativeDownloadGlyph:nativeDownloadGlyph(appExports),composerActionProfile:COMPOSER_PROFILE,toolbarInset:'page',newTaskOptions:{codexAppMode:'codex'},useStartNewConversation,compatibility:'structural',moduleRuntime:runtime};
+  }
   const [sharedUrl,initialUrl]=await Promise.all(['shared','initial'].map(name=>resolveLoadedAsset(name,{read,signal})));
   const checkAssets=captureResolvedAssets({shared:sharedUrl,initial:initialUrl},{signal});
   const [shared, initial] = await Promise.all([load(sharedUrl), load(initialUrl)]);

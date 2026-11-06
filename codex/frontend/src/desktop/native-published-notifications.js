@@ -1,9 +1,36 @@
 import {workspaceModuleSyntax,workspaceSourceFunctions,workspaceLexicalReferences,visitWorkspaceSource} from '../adapter/workspace-source.js';
+import {rspackReference,isRspackNamespace} from '../rspack-native.js';
 
 const fail=message=>Object.assign(new Error(message),{code:'desktop_notification_stream_drift'});
 const key=node=>node&&!node.computed?(node.key?.name??node.key?.value):null;
 const method=(node,name)=>node.body.body.find(value=>value.type==='MethodDefinition'&&!value.static&&key(value)===name)?.value;
 const own=(object,name)=>Object.getOwnPropertyDescriptor(object??{},name)?.value;
+
+export function rspackPublishedNotifications(runtime,postbox,check){
+  const candidates=[];
+  for(const record of runtime.records().values()){
+    if(!isRspackNamespace(record.namespace))continue;
+    for(const [classKey,Class]of Object.entries(record.namespace)){
+      if(typeof Class!=='function'||typeof Class.prototype?.dispatchMessage!=='function'||typeof Class.prototype?.subscribe!=='function')continue;
+      const exported=record.info.exports.get(classKey);if(exported?.type!=='Identifier')continue;
+      const declaration=record.info.fn.body.body.find(node=>node.type==='ClassDeclaration'&&node.id.name===exported.name);if(!declaration)continue;
+      const dispatch=method(declaration,'dispatchMessage');if(!dispatch||dispatch.params.length!==2)continue;
+      const postboxes=[];
+      visitWorkspaceSource(dispatch,node=>{const member=node.callee,argument=node.arguments?.[0];
+        if(node.type!=='CallExpression'||member?.type!=='MemberExpression'||member.computed||member.property.name!=='postMessage'||node.arguments.length!==1||argument?.type!=='ObjectExpression'||argument.properties.length!==2)return;
+        const[spread,type]=argument.properties;
+        if(spread.type==='SpreadElement'&&spread.argument.name===dispatch.params[1].name&&key(type)==='type'&&type.value.name===dispatch.params[0].name)postboxes.push(rspackReference(runtime,record,member.object));
+      });
+      if(postboxes.length!==1||postboxes[0]!==postbox)continue;
+      const bus=own(Class,'instance'),busKeys=Object.keys(record.namespace).filter(key=>record.namespace[key]===bus);
+      if(bus&&busKeys.length===1)candidates.push({record,classKey,Class,busKey:busKeys[0],bus});
+    }
+  }
+  if(candidates.length!==1)throw fail('A unique Native Rspack notification stream is required');
+  const {record,classKey,Class,busKey,bus}=candidates[0],namespace={Class,bus,postbox};
+  runtime.pin(record);
+  return nativePublishedNotifications({namespace,selection:{constructor:'Class',bus:'bus',postbox:'postbox'},postbox,check(){check();runtime.check();if(record.namespace[classKey]!==Class||record.namespace[busKey]!==bus)throw fail('Native notification exports were replaced');}});
+}
 
 // Identify Native's existing window dispatcher through its lexical postbox.
 // The factory and getInstance method are never called by Core.

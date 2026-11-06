@@ -18,7 +18,7 @@ function fixture(t){
   function Frame(){return ['hideThreadContent','canInteract','shouldResume','threadAccess','hostMcpApps'];}
   function ThreadSubscription(){return ['threadKey','cancelRelease','useSyncExternalStore','hostId','threadId'];}
   function Capture({allowsBareModifiers,allowsSequences,captureAriaLabel,onStartCapture,onCapture,onCancelCapture}){return [allowsBareModifiers,allowsSequences,captureAriaLabel,onStartCapture,onCapture,onCancelCapture];}
-  function eventAccelerator(event){return ['ctrlKey','metaKey','altKey','shiftKey','Command',event].join('+');}
+  function eventAccelerator(event){const keys=[];event.ctrlKey&&keys.push('Ctrl');event.metaKey&&keys.push('Command');event.altKey&&keys.push('Alt');event.shiftKey&&keys.push('Shift');keys.push(event.key);return keys.join('+');}
   function Row(){return ['labelSizing','controlSizing','description','control'];}
   function useCommand(){return ['contextHandler','keyboardHandler','menuItem','useEffect'];}
   function dispatchKeyboard(a,b,c){return ['keyboard_shortcut',a,b,c];}

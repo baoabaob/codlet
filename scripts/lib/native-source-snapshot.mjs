@@ -7,7 +7,7 @@ export const digest = value => createHash('sha256').update(value).digest('hex');
 const MAX_FILE = 64 * 1024 * 1024;
 const MAX_TOTAL = 512 * 1024 * 1024;
 const sourceEntry = name => name === 'package.json' ||
-  /^(?:webview\/assets|\.vite\/build)\/[^/]+\.(?:js|mjs|cjs)$/.test(name) ||
+  /^(?:webview\/assets(?:\/async)?|\.vite\/build)\/[^/]+\.(?:js|mjs|cjs)$/.test(name) ||
   /^[^/]*(?:build|metadata|version)[^/]*\.json$/i.test(name);
 
 export function relativeSourcePath(name) {

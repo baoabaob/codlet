@@ -10,6 +10,7 @@ const threadId = value => {
 export function createNativeManagerRpc({ rpc, client, check, report = () => {} }) {
   let alive = true, failure = null, knownWatching = false, knownReading = null, knownDirty = 0;
   let knownIds = new Set();
+  let metadataUsesListSummary = false;
   const subscriptions = new Set(), threads = new Map(), stateListeners = new Set(), pendingSettings = new Map(), errorListeners = new Set();
   const fault = error => { if (!alive) return; failure ??= error; report(error); for (const listener of [...errorListeners]) { try { listener(error); } catch {} } };
   const assert = () => {
@@ -159,8 +160,24 @@ export function createNativeManagerRpc({ rpc, client, check, report = () => {} }
     async readLoadedThreadMetadata(requestedIds) {
       const ids = requestedIds ?? await readKnownIds();
       if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id)) throw fail('desktop_summary_drift', 'Native cached thread identities changed');
-      // Native's metadata endpoint deliberately excludes turns and previews.
-      return ids.length ? call('getCachedThreadMetadata', ids) : [];
+      if (!ids.length) return [];
+      // Both contracts expose metadata only. Negotiate only the explicit missing
+      // method response; transport, owner and application errors remain errors.
+      if (!metadataUsesListSummary) {
+        try { return await call('getCachedThreadMetadata', ids); }
+        catch (error) {
+          if (error?.message !== "'getCachedThreadMetadata' is not a function.") throw error;
+          assert(); metadataUsesListSummary = true;
+        }
+      }
+      const values = await Promise.all(ids.map(async id => {
+        const value = await call('getThreadListSummary', id);
+        if (value == null) return null;
+        if (value.conversationId !== id || value.hostId != null && value.hostId !== 'local')
+          throw fail('desktop_summary_drift', 'Native thread list summary belongs to another thread or host');
+        return { ...value, id, name: value.title, status: value.threadRuntimeStatus };
+      }));
+      return values.filter(value => value !== null);
     },
     addConversationStateCallback(listener) { stateListeners.add(listener); return () => stateListeners.delete(listener); },
     addNotificationCallback(methods, listener) {

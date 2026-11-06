@@ -1,6 +1,7 @@
 import {componentSource,currentElementAncestry} from '../host-discovery.js';
 import {OWNED,workspaceError} from './workspace-dom.js';
 import {parse,parseExpressionAt} from 'acorn';
+import {rspackReference,isRspackNamespace} from '../rspack-native.js';
 
 const plans=new WeakMap();
 const field=(node,key)=>node?.type==='ObjectExpression'||node?.type==='ObjectPattern'?node.properties.find(property=>property.type==='Property'&&!property.computed&&(property.key.name??property.key.value)===key)?.value:null;
@@ -25,6 +26,22 @@ function cacheSource(source){
 }
 const agentConsumer=source=>source.one(source.nodes.filter(node=>node.type==='VariableDeclarator'&&node.init?.type==='CallExpression'&&field(node.id,'agentMode')&&
   field(node.id,'permissionProfileId')&&field(node.id,'setAgentMode')&&field(node.id,'setPermissionProfileId')&&field(node.id,'shouldSendPermissionOverrides')));
+const permissionCallee=node=>{const value=node?.type==='SequenceExpression'?node.expressions.at(-1):node;return value?.type==='Identifier'?value.name:value?.type==='MemberExpression'&&!value.computed&&value.object.type==='Identifier'?value.object.name+'.'+value.property.name:null;};
+export function rspackPermissionPickerBindings(runtime,agentState){
+  const bindings=new Map();
+  for(const record of runtime.records().values()){
+    if(!isRspackNamespace(record.namespace))continue;
+    if(!Object.values(record.namespace??{}).some(value=>componentSource(value).includes('permissionProfilesOverride')))continue;
+    for(const node of record.info.declarations.values()){
+    if(node?.type!=='FunctionDeclaration')continue;
+    const source=record.info.text(node);if(!['permissionProfilesOverride','setAgentMode','setPermissionProfileId'].every(marker=>source.includes(marker)))continue;
+    try{const consumer=agentConsumer(cacheSource(source)),callee=consumer.init.callee,last=callee.type==='SequenceExpression'?callee.expressions.at(-1):callee;
+      if(rspackReference(runtime,record,last)===agentState){runtime.pin(record);bindings.set(source,{callee:permissionCallee(callee),agentState});}
+    }catch{}
+    }
+  }
+  return bindings;
+}
 // Resolve the consumer's lexical import to the already loaded hook object. A
 // different hook returning the same field names is not a permission authority.
 export function permissionPickerBindings(source,url,modules,agentState){
@@ -75,15 +92,19 @@ export function permissionCachePlan(pickerSource,agentSource,{callee}={}){
       branch.alternate.right.object.name!==agent.cache||literal(branch.alternate.right.property)!==resultSlot||
       agent.identity(field(early.argument,'shouldSendPermissionOverrides'))===null)throw Error('Native cached return flow changed');
     const consumer=agentConsumer(view);
-    if(typeof callee!=='string'||consumer.init.callee.type!=='Identifier'||consumer.init.callee.name!==callee)throw Error('Native permission hook binding changed');
+    if(typeof callee!=='string'||permissionCallee(consumer.init.callee)!==callee)throw Error('Native permission hook binding changed');
     const mode=view.one(view.nodes.filter(node=>node.type==='VariableDeclarator'&&node.init?.type==='ConditionalExpression'&&literal(node.init.consequent)==='guardian-approvals'&&
       view.same(node.init.alternate,field(consumer.id,'agentMode'))));
     const viewArgument=view.one(view.nodes.filter(node=>node.type==='VariableDeclarator'&&node.init?.type==='Identifier'&&node.init.name===view.root.params[0]?.name&&
       field(node.id,'conversationId')&&field(node.id,'hostId')&&field(node.id,'cwdOverride')&&field(node.id,'disableDefaultPermissions')&&field(node.id,'disableCustomPermissions')));
     const viewInputs=view.nodes.filter(node=>node.type==='ObjectExpression'&&['conversationId','hostId','cwdOverride'].every(key=>view.same(field(node,key),field(viewArgument.id,key))));
-    const viewInputSlots=viewInputs.flatMap(node=>{const parent=view.parents.get(node);return parent?.type==='AssignmentExpression'?view.slots(parent.left):[];});
-    const inputOwners=viewInputs.map(node=>view.parents.get(node)?.left);
-    if(consumer.init.arguments.length!==1||!inputOwners.some(node=>view.same(node,consumer.init.arguments[0])))throw Error('Native picker hook input changed');
+    if(consumer.init.arguments.length!==1)throw Error('Native picker hook input changed');
+    const inputOwner=view.one(viewInputs.map(node=>view.parents.get(node)).filter(parent=>parent?.type==='AssignmentExpression'&&
+      parent.start<consumer.start&&view.same(parent.left,consumer.init.arguments[0])));
+    // Rspack's compiler reuses temporaries after the hook call. Only writes
+    // retaining this argument between its construction and consumption own it.
+    const viewInputSlots=[...new Set(view.writes.filter(write=>write.node.start>=inputOwner.end&&write.node.start<consumer.start&&
+      view.same(write.value,inputOwner.left)).map(write=>write.index))];
     // Preserve Native's guardian-only display mapping as well as its raw-mode
     // branch. Only these actual inputs may participate in the condition.
     const guardian=view.one(view.nodes.filter(node=>node.type==='VariableDeclarator'&&node.init?.type==='CallExpression'&&field(node.id,'canSelectGuardianMode')));

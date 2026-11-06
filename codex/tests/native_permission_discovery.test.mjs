@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import {loadNativePermissions} from '../frontend/src/desktop/native-permissions.js';
 import {NATIVE_PERMISSION_FUNCTIONS,matchesNativePermissionSource} from '../frontend/src/desktop/permission-contracts.js';
 
+test('compiled permission projections preserve their input and fallback contracts',()=>{
+  const wire=function(input){return null!=input.activePermissionProfile?{permissions:input.activePermissionProfile.id}:{sandboxPolicy:input.sandboxPolicy};};
+  const mode=function(input){let selected=builtIn(input);return null!=selected?selected:null!=input.approvalPolicy&&null!=input.sandboxPolicy?'custom':null;};
+  const defaults=function({isProjectless,requirements}){return isProjectless&&(0,policy.allowed)('granular',requirements)?'granular':'auto';};
+  for(const[role,fn]of [['toSettings',wire],['modeFromPolicy',mode],['defaultMode',defaults]])assert.equal(matchesNativePermissionSource(fn.toString(),fn.length,NATIVE_PERMISSION_FUNCTIONS[role]),true,role);
+  assert.equal(matchesNativePermissionSource(wire.toString().replace('input.activePermissionProfile.id','input.permissions'),1,NATIVE_PERMISSION_FUNCTIONS.toSettings),false);
+  assert.equal(matchesNativePermissionSource(mode.toString().replace("'custom'","'full-access'"),1,NATIVE_PERMISSION_FUNCTIONS.modeFromPolicy),false);
+});
+
 function fixture(){
   const scopes=Object.fromEntries(['ComposerScope','ThreadScope','RouteScope'].map(name=>[name,{__scopeBrand:name,id:Symbol(name)}]));
   const functions={
