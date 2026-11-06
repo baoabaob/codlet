@@ -38,10 +38,33 @@ recognizes the signed `chrome.dll` hash
 - Complete Codex suite: 666 passed, two opt-in tests skipped.
 - Native source and owned-run checks: 17 passed.
 - Rust lab checks: 39 passed; formatting passed.
+- Compatibility catalog refresh, cache and version-selection checks: 17 passed.
 - Online package/release checks: seven passed.
 - Publisher tests and native installer self-tests passed. Installer checks
   exercised Chinese, English and automatic language fallback, window layout,
   feature selection, payload checking and cancellation without installing.
+
+## Production distribution
+
+The production executable was built from
+`2a6fe2ad1847d9e5eaad4a037e44434b0580ebfb` with the release profile and default
+features disabled. It is distinct from the acceptance executable below.
+Both adapter bundles, the Desktop host entry, Core UI SDK and client-source
+runtime were found byte-for-byte in this executable. All 39 portable and 39 MSI
+manifest payload records matched. The ordinary executable passed distribution
+setup checks, including optional GUI installation, repeat setup, disabled and
+revoked preferences, and removal. The MSI structure check passed without an
+installation transaction.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Core executable | 27,236,864 | `163e529245d4cf296061d2bbb0f9f55ae0d7b26ab79c19383723cf1c868d8377` |
+| Windows setup | 9,038,336 | `6013ab396505ee8f53b59bc60e4e2f280d20cecd5ea8f8b0d0b9aa35557717fa` |
+| Windows MSI | 8,941,568 | `44f5a4a82d90b3551e153324a6642d1777df4f144af50a62c29d3b912b7006b0` |
+| Portable runtime update | 10,057,514 | `933357223b34a636897b49dd2cc79102543878da5fae1bd221f83af41a6856b9` |
+
+The GUI archive matches the published rc.7 digest and its Ed25519-signed update
+feed. No private plugin or Native source snapshot is part of the release.
 
 ## Actual Windows Native acceptance
 
@@ -76,6 +99,12 @@ explicitly requests metadata-only items. Its failed report is retained. A
 diagnostic-plugin reload corrected the assertion to use `items.list` and
 continued against the already completed task; the initial send was not repeated.
 The final continuation completed all nine checks.
+
+The final run and the preceding R4 run exited normally. Recorded process
+identities and child processes were checked before removing their executable,
+runtime, profile-home and plugin-cache copies. Reports, session JSONL and
+databases were retained. Superseded lab stages were removed; generated workspace
+artifacts were reduced to approximately 267 MB.
 
 An earlier R4 functional run also verified composer action click/cleanup,
 editable draft creation and Native page controls. Its broader Host resource

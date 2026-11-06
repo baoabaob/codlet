@@ -21,7 +21,18 @@ The project's current platform scope is based on the official [Windows deploymen
 
 ## Client integration
 
-The published Windows x64 **1.0.0-rc.22** supports official package
+Windows x64 **1.0.0-rc.24** supports Native package `26.1103.3517.0`,
+app `26.1103.31037`, build `25241`, with Desktop `0.2.23` and UI `0.1.21`.
+The current Rspack integration passed independent Native acceptance for synthetic
+messages/history, permission reads, working-state transitions, transcript
+scrolling, shortcut registration, independent panels and page restoration.
+See [rc.24 validation](releases/1.0.0-rc.24/validation.md) for its scope and
+[publication](releases/1.0.0-rc.24/publication.md) for exact production artifacts.
+The independently published catalog revision `2026110701` contains nine records.
+The rc.24 executable retains the source revision's bundled `2026103101` baseline;
+its normal catalog refresh reads the newer advisory record.
+
+The earlier Windows x64 **1.0.0-rc.22** supports official package
 `26.1027.3384.0` / app `26.1027.30824` / build `22943`, with Desktop `0.2.22`
 and UI `0.1.19`. Its exact `b32fc5e`/`c30f696c…` production package passed an
 actual rc.21 setup upgrade, same-version maintenance and installed Native,
@@ -35,7 +46,7 @@ Node pin. Real OAuth/account/settings/Statsig network paths and first-time Node
 download were not validated. The Native menu has no explicit read-only option,
 so that permission mutation was unsupported and not executed.
 
-The independently published public catalog is revision `2026103101`, with eight
+The rc.22 public catalog was revision `2026103101`, with eight
 records, including this accepted package/pair. The final production binary keeps
 its older bundled baseline `2026102801`; source metadata and public advisory
 catalog publication do not rebuild it. Their exact commits and public raw-body

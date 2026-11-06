@@ -1,8 +1,9 @@
 # Known issues and current limits
 
-The current Windows x64 preview is **1.0.0-rc.21**. Its Desktop HTTP correction
-and the earlier rc.20 isolated checks on Native builds 22391 and 21828 have
-separate evidence. The exact validation and remaining scope are listed in
+The current Windows x64 preview is **1.0.0-rc.24**, targeting Native build 25241.
+Its independent acceptance uses a synthetic local backend. Real-account
+upstream traffic, MSI upgrade installation, macOS/ARM64 and private-plugin
+interaction matrices remain separate. Exact validation is listed in
 [release readiness](release-readiness.md).
 
 ## MSI update handoff
@@ -24,7 +25,7 @@ probes, structural source discovery, entry-frame capture and per-capability reco
 See the [compatibility contract](spec/client-compatibility.md).
 
 Bootstrap corrections change resident code and take effect after a new start.
-The [current candidate record](releases/1.0.0-rc.20/validation.md) distinguishes
+The [current validation record](releases/1.0.0-rc.24/validation.md) distinguishes
 fresh checks from earlier desktop evidence.
 
 ## Unified Core and compatible online updates
